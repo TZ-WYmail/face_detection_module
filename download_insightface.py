@@ -14,9 +14,11 @@ InsightFace 完整模型下载脚本
   方式2: HuggingFace immich-app/buffalo_l（公开，无需 Token）
   方式3: HuggingFace 直链逐个下载
 
+统一路径: ./models/insightface/buffalo_l/（通过model_manager.py管理）
+
 用法：
     python download_insightface.py
-    python download_insightface.py --insightface-dir ./models/insightface
+    python download_insightface.py --insightface-dir ./models/insightface/buffalo_l/
     python download_insightface.py --skip-detection   # 跳过检测模型（如果你用 YOLO）
     python download_insightface.py --verify-only      # 只验证，不下载
 """

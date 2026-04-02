@@ -45,7 +45,7 @@ def example_1_basic_usage():
         yaw_threshold=25.0,
         pitch_threshold=25.0,
         roll_threshold=15.0,
-        threshold=0.5,
+        threshold=0.8,  # 标准模式：0.8（阈值越高，匹配标准越严格，漏检越多）
         metric='cosine',
         detector='auto',
         cuda=False
@@ -86,7 +86,7 @@ def example_2_high_quality():
         yaw_threshold=10.0,      # 严格
         pitch_threshold=10.0,    # 严格
         roll_threshold=5.0,      # 严格
-        threshold=0.6,           # 更严格的去重
+        threshold=0.85,          # 严格模式：0.85（非常严格，只保留高置信度匹配）
         metric='cosine',
         detector='insightface',
         cuda=True
@@ -124,7 +124,7 @@ def example_3_fast_processing():
         yaw_threshold=40.0,    # 宽松阈值
         pitch_threshold=40.0,
         roll_threshold=30.0,
-        threshold=0.4,         # 宽松的去重
+        threshold=0.8,         # 即使宽松模式也使用0.8（保持严格的相似度匹配）
         metric='cosine',
         detector='yolo',       # 使用快速检测器
         cuda=True
@@ -172,7 +172,7 @@ def example_4_batch_processing():
         yaw_threshold=25.0,
         pitch_threshold=25.0,
         roll_threshold=15.0,
-        threshold=0.5,
+        threshold=0.8,
         metric='cosine',
         detector='auto',
         cuda=True
@@ -205,7 +205,7 @@ def example_5_using_extractor_class():
         detector='insightface',
         cuda=True,
         metric='cosine',
-        threshold=0.5,
+        threshold=0.8,
         yaw_threshold=25.0,
         pitch_threshold=25.0,
         roll_threshold=15.0,

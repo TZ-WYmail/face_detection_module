@@ -90,12 +90,12 @@ FACE_SAVE_VALIDATOR = {
 SIMILARITY_METRIC = 'cosine'  # 'cosine' | 'euclidean'
 
 # 相似度阈值
-# - cosine: 0-1 (推荐 0.5-0.7)
+# - cosine: 0-1 (推荐 0.8-0.95，越高越严格)
 # - euclidean: 0-2 (推荐 0.6-1.0)
-DEDUP_THRESHOLD = 0.8
+DEDUP_THRESHOLD = 0.8  # 标准模式：0.8
 
-# 严格模式下的去重阈值
-STRICT_DEDUP_THRESHOLD = 0.8
+# 严格模式下的去重阈值（更严格的匹配标准）
+STRICT_DEDUP_THRESHOLD = 0.9  # 严格模式：0.9（更高=更严格，漏检更少）
 
 # ============================================================================
 # 人脸对齐配置
