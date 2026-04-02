@@ -142,9 +142,9 @@ def check_command_line_args() -> bool:
         parser = ArgumentManager.create_parser()
         
         # 测试一个简单的参数列表
-        test_args = parser.parse_args(['test_video.mp4', '--threshold', '0.8'])
+        test_args = parser.parse_args(['test_video.mp4', '--threshold', '0.6'])
         
-        if test_args.threshold == 0.8:
+        if test_args.threshold == 0.6:
             logger.info(f"  ✓ 参数解析工作正常")
             return True
         else:
@@ -173,9 +173,9 @@ def print_quick_start() -> None:
     python face_dedup_pipeline.py videos/video.mp4 --strict-mode
 
 4️⃣  自定义参数:
-    python face_dedup_pipeline.py videos/video.mp4 \\
-      --threshold 0.8 \\
-      --conf 0.6 \\
+        python face_dedup_pipeline.py videos/video.mp4 \
+            --threshold 0.6 \
+            --conf 0.6 \
       --yaw-threshold 20 \\
       --output-dir ./output/myfaces
 

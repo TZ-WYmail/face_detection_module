@@ -548,9 +548,9 @@ CONFIDENCE=0.5
 # 人脸去重相似度阈值（0-1，越高越严格）
 # 推荐：
 #   - 严格模式：0.9（几乎无去重）
-#   - 正常模式：0.8（推荐，平衡）
-#   - 宽松模式：0.6-0.7（积极去重）
-DEDUP_THRESHOLD=0.8
+#   - 正常模式：0.6（已统一为0.6）
+#   - 宽松模式：0.5-0.6（更宽松）
+DEDUP_THRESHOLD=0.6
 
 # ==================== 模型选择 ====================
 # 人脸检测器（insightface / yolo）
@@ -593,8 +593,8 @@ YOLO_CONFIDENCE = 0.5                 # YOLO 置信度
 YOLO_IOU_THRESHOLD = 0.5              # YOLO IOU 阈值
 
 # 人脸去重
-DEDUP_THRESHOLD = 0.8                 # 去重相似度阈值
-STRICT_DEDUP_THRESHOLD = 0.9          # 严格去重阈值
+DEDUP_THRESHOLD = 0.6                 # 去重相似度阈值
+STRICT_DEDUP_THRESHOLD = 0.6          # 严格去重阈值（已统一为0.6）
 
 # 头部姿态过滤
 YAW_THRESHOLD = 15                    # 左右转动阈值（度）
@@ -613,7 +613,7 @@ BATCH_SIZE = 32                       # 批处理大小
 # 覆盖默认配置
 python face_dedup_pipeline.py videos/video.mp4 \
     --cuda \
-    --threshold 0.9 \
+    --threshold 0.6 \
     --sample-interval 5 \
     --confidence 0.7 \
     --yaw-threshold 10
@@ -635,7 +635,7 @@ python face_dedup_pipeline.py videos/video.mp4 --cuda
 #### 方式 3️⃣：修改 config.py（推荐用于项目级配置）
 ```python
 # 编辑 config.py
-DEDUP_THRESHOLD = 0.9
+DEDUP_THRESHOLD = 0.6
 YAW_THRESHOLD = 10
 BATCH_SIZE = 64
 ```
@@ -655,7 +655,7 @@ python face_dedup_pipeline.py videos/video.mp4 --cuda
    最高         中等            最低
 ```
 
-**说明**：优先级高的配置会覆盖低的。例如，如果同时指定了 `--threshold 0.9` 和 `.env` 中的 `DEDUP_THRESHOLD=0.8`，则使用命令行参数 0.9。
+**说明**：优先级高的配置会覆盖低的。例如，如果同时指定了 `--threshold 0.6` 和 `.env` 中的 `DEDUP_THRESHOLD=0.6`，则使用命令行参数（命令行参数优先）。
 
 
 

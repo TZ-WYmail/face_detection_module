@@ -95,20 +95,20 @@ class ArgumentManager:
         parser = argparse.ArgumentParser(
             description='人脸检测和去重系统',
             formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog="""
+                        epilog="""
 示例:
-  # 基础使用
-  python face_dedup_pipeline.py videos/video.mp4
+    # 基础使用
+    python face_dedup_pipeline.py videos/video.mp4
   
-  # 严格模式（更严格的正脸筛选）
-  python face_dedup_pipeline.py videos/video.mp4 --strict-mode
+    # 严格模式（更严格的正脸筛选）
+    python face_dedup_pipeline.py videos/video.mp4 --strict-mode
   
-  # 自定义参数
-  python face_dedup_pipeline.py videos/video.mp4 --threshold 0.8 --conf 0.6
+    # 自定义参数
+    python face_dedup_pipeline.py videos/video.mp4 --threshold 0.6 --conf 0.6
   
-  # 从配置文件加载
-  python face_dedup_pipeline.py videos/video.mp4 --config config.yaml
-            """
+    # 从配置文件加载
+    python face_dedup_pipeline.py videos/video.mp4 --config config.yaml
+                        """
         )
         
         # ============================================================

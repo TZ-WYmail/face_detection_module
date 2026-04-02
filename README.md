@@ -375,7 +375,7 @@ python face_dedup_pipeline.py videos/video-2.mp4 \
     --yaw-threshold 15 \
     --pitch-threshold 15 \
     --roll-threshold 10 \
-    --threshold 0.8 \
+    --threshold 0.6 \
     --conf 0.8 \
     -o ./output/high_quality
 ```
@@ -389,7 +389,7 @@ python face_dedup_pipeline.py videos/video-2.mp4 \
     --yaw-threshold 25 \
     --pitch-threshold 25 \
     --roll-threshold 15 \
-    --threshold 0.8 \
+    --threshold 0.6 \
     --conf 0.8 \
     -o ./output/balanced
 ```
@@ -402,7 +402,7 @@ python face_dedup_pipeline.py videos/video-2.mp4 \
     --yaw-threshold 40 \
     --pitch-threshold 40 \
     --roll-threshold 30 \
-    --threshold 0.8 \
+    --threshold 0.6 \
     --conf 0.8 \
     -o ./output/fast
 ```
@@ -415,7 +415,7 @@ python face_dedup_pipeline.py videos/video-2.mp4 \
     --yaw-threshold 60 \
     --pitch-threshold 60 \
     --roll-threshold 45 \
-    --threshold 0.8 \
+    --threshold 0.6 \
     --conf 0.8 \
     -o ./output/loose
 ```

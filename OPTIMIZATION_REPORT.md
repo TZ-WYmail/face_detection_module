@@ -21,7 +21,7 @@
 
 | 问题 | 状态 | 说明 |
 |------|------|------|
-| **相似度阈值不统一** | ✅ | 所有去重阈值改为0.8～0.9 |
+| **相似度阈值不统一** | ✅ | 所有去重阈值改为0.6 |
 | **模型管理分散** | ✅ | 创建`ModelManager`统一管理，路径: `./models/` |
 | **模型下载逻辑混乱** | ✅ | 更新注释，统一为本地路径策略 |
 | **保存路径分散** | ✅ | 创建`PathManager`统一路径管理 |
@@ -37,19 +37,19 @@
 **改动内容:**
 ```python
 # config.py
-DEDUP_THRESHOLD = 0.8              # 标准模式
-STRICT_DEDUP_THRESHOLD = 0.9       # ↑ 为0.8→0.9（提高严格性）
+DEDUP_THRESHOLD = 0.6              # 标准模式（已统一为0.6）
+STRICT_DEDUP_THRESHOLD = 0.6       # 严格模式：0.6（已统一）
 
-# examples.py - 所有示例改为0.8及以上
-示例1: threshold=0.5 → 0.8
-示例2: threshold=0.6 → 0.85
-示例3: threshold=0.4 → 0.8
+# examples.py - 所有示例改为0.6
+示例1: threshold=0.5 → 0.6
+示例2: threshold=0.6 → 0.6
+示例3: threshold=0.4 → 0.6
 ```
 
 **意义:**
-- ✅ 确保所有模式都使用较高的相似度阈值
-- ✅ 严格模式与标准模式有明确的区分（0.9 > 0.8）
-- ✅ 提高了去重的准确度，减少误匹配
+- ✅ 确保去重阈值在仓库中统一，便于维护
+- ✅ 去重阈值已统一为 0.6（严格模式与标准模式一致）
+- ✅ 提高了配置一致性，减少运维和调参成本
 
 ---
 
@@ -195,7 +195,7 @@ python face_dedup_pipeline.py videos/video.mp4 --strict-mode
 
 # 自定义参数
 python face_dedup_pipeline.py videos/video.mp4 \
-  --threshold 0.8 \
+  --threshold 0.6 \
   --conf 0.6 \
   --yaw-threshold 20 \
   --output-dir ./output/myfaces
@@ -211,7 +211,7 @@ detector: insightface
 conf: 0.6
 
 # 去重参数
-threshold: 0.8
+threshold: 0.6
 metric: cosine
 
 # 正脸过滤
@@ -307,13 +307,13 @@ python face_dedup_pipeline.py videos/video.mp4 --strict-mode
   - yaw_threshold: 25.0°
   - pitch_threshold: 25.0°
   - roll_threshold: 15.0°
-  - threshold: 0.8
+  - threshold: 0.6
 
 启用后（--strict-mode）:
   - yaw_threshold: 15.0°     ↓ 更严格
   - pitch_threshold: 15.0°   ↓ 更严格
   - roll_threshold: 10.0°    ↓ 更严格
-  - threshold: 0.9           ↓ 更严格的去重
+  - threshold: 0.6           ↓ 更严格的去重（已统一为0.6）
 ```
 
 ### 配置文件支持
@@ -330,7 +330,7 @@ python face_dedup_pipeline.py videos/video.mp4 --strict-mode
 cat > my_config.yaml << 'EOF'
 detector: insightface
 conf: 0.6
-threshold: 0.8
+threshold: 0.6
 yaw_threshold: 20
 pitch_threshold: 20
 roll_threshold: 15
@@ -365,16 +365,16 @@ python face_dedup_pipeline.py videos/video.mp4 --save-strategy all
 
 | 参数 | 旧值 | 新值 | 说明 |
 |------|------|------|------|
-| `DEDUP_THRESHOLD` | 0.8 | 0.8 | 保持不变，已符合要求 |
-| `STRICT_DEDUP_THRESHOLD` | 0.8 | 0.9 | ↑ 提高，体现严格性 |
+| `DEDUP_THRESHOLD` | 0.8 | 0.6 | ↓ 统一为 0.6 |
+| `STRICT_DEDUP_THRESHOLD` | 0.9 | 0.6 | ↓ 统一为 0.6 |
 
 ### examples.py 变更
 
 | 示例 | 旧值 | 新值 | 说明 |
 |------|------|------|------|
-| 示例1（标准） | 0.5 | 0.8 | 统一为更严格的标准 |
-| 示例2（严格） | 0.6 | 0.85 | 进一步提高严格度 |
-| 示例3（宽松） | 0.4 | 0.8 | 统一最低标准为0.8 |
+| 示例1（标准） | 0.5 | 0.6 | 统一为仓库默认 0.6 |
+| 示例2（严格） | 0.6 | 0.6 | 统一为仓库默认 0.6 |
+| 示例3（宽松） | 0.4 | 0.6 | 统一为仓库默认 0.6 |
 
 ### 新增的全局参数
 
@@ -422,7 +422,7 @@ python face_dedup_pipeline.py videos/video.mp4 --strict-mode
 ```bash
 python face_dedup_pipeline.py videos/video.mp4 \
   --conf 0.5 \
-  --threshold 0.8 \
+  --threshold 0.6 \
   --sample-interval 5
 ```
 
@@ -440,7 +440,7 @@ python face_dedup_pipeline.py videos/video.mp4 \
 cat > high_quality.yaml << 'EOF'
 detector: insightface
 conf: 0.7
-threshold: 0.9
+  threshold: 0.6
 yaw_threshold: 15
 pitch_threshold: 15
 roll_threshold: 10
