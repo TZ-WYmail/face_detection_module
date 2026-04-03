@@ -102,37 +102,6 @@ python face_dedup_pipeline.py video.mp4 --conf 0.3 --sample-interval 10 -o ./out
 python face_dedup_pipeline.py video.mp4 --no-tracks --sample-interval 5 -o ./output
 ```
 
-**预期效果：**
-- `--sample-interval 30`: 处理时间 3-5分钟（快6-7倍，但会遗漏部分人脸）
-- `--detector yolo`: 处理时间 5-8分钟（快2-3倍，准度95%左右）
-- 结合使用: 处理时间 2-3分钟（快5-8倍，但需权衡准度）
-
-#### 📈 大批量处理方案
-
-```bash
-# 大批量视频处理，优先速度
-python face_dedup_pipeline.py ./videos \
-    --detector yolo \
-    --sample-interval 10 \
-    --conf 0.4 \
-    --cuda \
-    -o ./output
-```
-
-#### ✨ 质量优先方案（准度最高，但更慢）
-
-```bash
-# 此举当然，提高准度同时保持合理速度
-python face_dedup_pipeline.py videos/video-2.mp4 \
-    --detector insightface \
-    --sample-interval 3 \
-    --cuda \
-    --threshold 0.6 \
-    --yaw-threshold 15 \
-    --pitch-threshold 15 \
-    --roll-threshold 10 \
-    -o ./output
-```
 
 ### 实际性能参考
 
@@ -179,22 +148,6 @@ python download_models.py --insightface-dir ./models/insightface
 - YOLOv11-face模型 (~25MB)
 - ByteTrack配置
 
-### 3. 基本使用
-
-**处理单个视频：**
-```bash
-python face_dedup_pipeline.py input_video.mp4 -o ./output
-```
-
-**处理视频目录：**
-```bash
-python face_dedup_pipeline.py ./videos/ -o ./output
-```
-
-**使用GPU加速：**
-```bash
-python face_dedup_pipeline.py ./videos/ --cuda -o ./output
-```
 
 ## 🎯 命令行参数
 
@@ -328,7 +281,7 @@ embeddings = np.array([np.load(f) for f in emb_files])
 print(embeddings.shape)  # (N, 526)
 ```
 
-## 🔧 高级用法
+## 🔧 用法
 
 ### 使用预设（基于 config.py 的 PRESETS）
 
@@ -465,80 +418,7 @@ InsightFace提取的526维特征向量，用于人脸去重。
 
 *在RTX3090上，输入为1280x720分辨率
 
-## 🐛 常见问题
 
-### Q1: 运行时提示模型文件不存在
-**A:** 运行 `python download_models.py` 下载模型，或手动指定模型路径。
-
-### Q2: GPU内存不足
-**A:** 
-- 使用CPU：移除 `--cuda` 参数
-- 降低分辨率：使用 `--sample-interval` 采样
-- 更换轻量级检测器：`--detector yolo`
-
-### Q3: 为什么某些人脸被过滤掉？
-**A:** 可能原因：
-- 不符合正脸条件（姿态角度过大）
-- 人脸质量不足（太小、遮挡等）
-- 被去重算法识别为重复
-
-使用详细日志查看，或调宽阈值重新处理。
-
-### Q4: 处理速度慢（为什么需要20分钟？）
-**A:** 这是正常的。一个3分钟的4K视频需要15-20分钟处理，主要原因是：
-
-**耗时分解：**
-- 👑 **Embedding提取：25-35%** - InsightFace对每个人脸计算526维特征向量
-- 🔍 **人脸检测：25-35%** - 深度学习在4K分辨率扫描检测人脸
-- 📹 **ByteTrack跟踪：5-10%** - 关联同一人的多个轨迹
-- 📐 **头部姿态估计：8-12%** - 计算yaw/pitch/roll角度
-- 其他步骤：15-20%
-
-**具体数据：**
-```
-视频规格：3分钟4K（3840×2160）= 5,400帧
-单帧处理：~200ms（包含检测+提取+去重）
-总耗时：5,400 × 200ms = 1,080秒 ≈ 18分钟 ✓
-```
-
-**优化方案（选择适合的方案）：**
-
-1. **快速方案**（2-3分钟，推荐大多数场景）
-```bash
-python face_dedup_pipeline.py video.mp4 \
-    --detector yolo \
-    --sample-interval 10 \
-    --cuda \
-    -o ./output
-    # 预期：3-5分钟，准度95%
-```
-
-2. **超快方案**（1-2分钟，接受质量下降）
-```bash
-python face_dedup_pipeline.py videos/video-2.mp4 \
-    --detector yolo \
-    --sample-interval 30 \
-    --no-tracks \
-    --cuda \
-    -o ./output
-    # 预期：1-2分钟，准度90%，会遗漏部分人脸
-```
-
-3. **质量方案**（保持当前质量，仅加速1-2倍）
-```bash
-python face_dedup_pipeline.py video.mp4 \
-    --sample-interval 2 \
-    --cuda \
-    -o ./output
-    # 预期：8-10分钟，准度99%
-```
-
-详见 **⚡ 处理流程详解** 部分获取完整的优化建议！
-
-### Q5: 如何微调去重阈值？
-**A:**
-- 提高相似度阈值（--threshold 0.6）：去重更严格，保留更多人脸
-- 降低相似度阈值（--threshold 0.4）：去重更宽松，只保留确实不同的人脸
 
 ## 📚 技术栈
 

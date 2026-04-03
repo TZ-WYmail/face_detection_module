@@ -12,7 +12,7 @@
 DEFAULT_DETECTOR = 'auto'  # 'auto' | 'insightface' | 'yolo' | 'haar'
 
 # 检测置信度阈值
-DEFAULT_CONFIDENCE_THRESHOLD = 0.6
+DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
 # 最小人脸尺寸（像素）
 MIN_BOX_SIZE = 20
@@ -71,7 +71,7 @@ MIN_SAVE_FACE_SIZE = 100  # 保存时最小人脸像素尺寸（长或宽）
 
 # 人脸占原图的最小百分比（用于检测误入镜的小人脸）
 # 如果人脸区域 < 原图面积 * 此阈值，则认为是误入镜，直接丢弃
-MIN_FACE_TO_IMAGE_RATIO = 0.01  # 最小占比 1%（范围：0.0-1.0）
+MIN_FACE_TO_IMAGE_RATIO = 0.006  # 最小占比 1%（范围：0.0-1.0）
 
 FACE_SAVE_VALIDATOR = {
     'min_face_width': 40,
@@ -90,13 +90,13 @@ FACE_SAVE_VALIDATOR = {
 SIMILARITY_METRIC = 'cosine'  # 'cosine' | 'euclidean'
 
 # 相似度阈值
-# - cosine: 0-1 (默认使用 0.6，越高越严格)
-# - euclidean: 0-2 (推荐 0.6-1.0)
-DEDUP_THRESHOLD = 0.6  # 标准模式：0.6（已统一到0.6）
+# - cosine: 0-1 (默认使用 0.5，越高越严格)
+# - euclidean: 0-2 (推荐 0.5-1.0)
+DEDUP_THRESHOLD = 0.5  # 标准模式：0.5（已统一到0.5）
 
 # 严格模式下的去重阈值（更严格的匹配标准）
-# 已按要求统一为 0.6
-STRICT_DEDUP_THRESHOLD = 0.6  # 严格模式：0.6
+# 已按要求统一为 0.5
+STRICT_DEDUP_THRESHOLD = 0.5  # 严格模式：0.5
 
 # ============================================================================
 # 人脸对齐配置
@@ -108,7 +108,7 @@ ALIGNED_FACE_SIZE = (112, 112)
 # 对齐参数
 ALIGNMENT_PARAMS = {
     'desired_left': (0.35, 0.35),  # 左眼期望位置
-    'desired_right_x': 0.65,        # 右眼期望x位置
+    'desired_right_x': 0.55,        # 右眼期望x位置
 }
 
 # ============================================================================
@@ -233,7 +233,7 @@ PRESETS = {
         'pitch_threshold': 15.0,
         'roll_threshold': 10.0,
         'min_face_size': 100,
-        'dedup_threshold': 0.6,
+        'dedup_threshold': 0.5,
         'confidence_threshold': 0.8,
         'description': '高质量模式：只保留正脸且质量高的人脸'
     },
@@ -242,7 +242,7 @@ PRESETS = {
         'pitch_threshold': 25.0,
         'roll_threshold': 15.0,
         'min_face_size': 50,
-        'dedup_threshold': 0.6,
+        'dedup_threshold': 0.5,
         'confidence_threshold': 0.8,
         'description': '平衡模式：默认推荐配置'
     },
@@ -251,7 +251,7 @@ PRESETS = {
         'pitch_threshold': 40.0,
         'roll_threshold': 30.0,
         'min_face_size': 30,
-        'dedup_threshold': 0.6,
+        'dedup_threshold': 0.5,
         'confidence_threshold': 0.8,
         'sample_interval': 5,
         'description': '快速模式：优先处理速度'
@@ -261,7 +261,7 @@ PRESETS = {
         'pitch_threshold': 60.0,
         'roll_threshold': 45.0,
         'min_face_size': 20,
-        'dedup_threshold': 0.6,
+        'dedup_threshold': 0.5,
         'confidence_threshold': 0.8,
         'description': '宽松模式：保留尽可能多的人脸'
     }
