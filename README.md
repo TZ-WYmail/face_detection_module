@@ -377,7 +377,7 @@ python face_dedup_pipeline.py videos/video.mp4 \
     --cuda \
     --sample-interval 5 \
     --conf 0.5 \
-    --quality-threshold 0.1 \
+    --quality-threshold 0.2 \
     --confidence-threshold 0.4 \
     --yaw-threshold 15 \
     --pitch-threshold 15 \
