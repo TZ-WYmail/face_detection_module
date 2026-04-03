@@ -9,13 +9,45 @@
 # ============================================================================
 
 # 默认检测器
-DEFAULT_DETECTOR = 'auto'  # 'auto' | 'insightface' | 'yolo' | 'haar'
+DEFAULT_DETECTOR = 'insightface'  # 'auto' | 'insightface' | 'yolo' | 'haar'
 
 # 检测置信度阈值
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
-# 最小人脸尺寸（像素）
-MIN_BOX_SIZE = 20
+# ============================================================================
+# 人脸尺寸配置：统一使用占全图比例（自适应分辨率）
+# ============================================================================
+# 核心设计：所有尺寸限制都基于一个参数计算 - 人脸面积占全图面积的最小比例
+#
+# 优势：
+# - 自动适应不同分辨率（1080p、4K、480p等）
+# - 改一个参数就能调整整个系统的严格程度
+# - 1080p中的\"30px人脸\"在4K中自动变成\"60px\"，保持相对大小一致\n#
+# 工作原理：
+# 1. 定义 MIN_FACE_SIZE_RATIO = 1.5% （人脸占全图的1.5%）\n# 2. 视频分辨率 1920×1080 = 2,073,600 像素
+# 3. 最小人脸面积 = 2,073,600 × 1.5% = 31,104 像素 (约176×176px)
+# 4. 其他5个参数自动从这个基础值计算得出
+#
+# 推荐值选择指南：
+# - 0.5% - 1.0% (1080p中约45-125px)   : 非常宽松，会有很多小人脸和误检
+# - 1.0% - 1.5% (1080p中约125-176px) : 平衡(推荐) ⭐
+# - 2.0% - 3.0% (1080p中约216-324px) : 较严格，只保留较大的人脸
+# - 5%+ (1080p中约324px+)            : 非常严格，极少小人脸
+
+MIN_FACE_SIZE_RATIO = 0.015  # 人脸面积占全图面积的最小比例（1.5%）
+                             # ⭐ 这个是唯一需要改的参数！
+                             # 改大 → 更严格、更少输出
+                             # 改小 → 更宽松、更多输出
+ 
+# ============================================================================
+# ⚠️ 以下参数已弃用（保留为参考），在运行时自动根据 MIN_FACE_SIZE_RATIO 计算
+# ============================================================================
+# MIN_BOX_SIZE - 自动从MIN_FACE_SIZE_RATIO计算（检测器过滤）
+# min_box_area - 自动从MIN_FACE_SIZE_RATIO计算（ByteTrack过滤）
+# MIN_FACE_SIZE - 自动从MIN_FACE_SIZE_RATIO计算（眼距检查）
+# MIN_SAVE_FACE_SIZE - 自动从MIN_FACE_SIZE_RATIO计算（保存过滤）
+# FACE_SAVE_VALIDATOR - 自动从MIN_FACE_SIZE_RATIO计算（保存验证）
+# ============================================================================
 
 # ============================================================================
 # 跟踪配置
@@ -26,11 +58,11 @@ USE_TRACKING = True
 
 # ByteTrack跟踪器配置
 BYTETRACK_CONFIG = {
-    'track_thresh': 0.5,      # 跟踪置信度阈值
+    'track_thresh': 0.4,      # 跟踪置信度阈值
     'track_buffer': 30,        # 轨迹缓冲大小
     'match_thresh': 0.8,       # 匹配阈值
     'aspect_ratio_range': (0.2, 5.0),  # 宽高比范围
-    'min_box_area': 10,        # 最小框面积
+    'min_box_area': None,      # 自动计算 - 将在运行时根据MIN_FACE_SIZE_RATIO设置
     'mot20': False,            # MOT20数据集格式
 }
 
@@ -39,9 +71,9 @@ BYTETRACK_CONFIG = {
 # ============================================================================
 
 # 姿态角度阈值（度）
-YAW_THRESHOLD = 25.0      # 左右转动
-PITCH_THRESHOLD = 25.0    # 上下转动
-ROLL_THRESHOLD = 15.0     # 头部倾斜
+YAW_THRESHOLD = 15.0      # 左右转动
+PITCH_THRESHOLD = 15.0    # 上下转动
+ROLL_THRESHOLD = 10.0     # 头部倾斜
 
 # 严格模式下的阈值（更严格）
 STRICT_YAW_THRESHOLD = 15.0
@@ -49,8 +81,10 @@ STRICT_PITCH_THRESHOLD = 15.0
 STRICT_ROLL_THRESHOLD = 10.0
 
 # 关键点相关
-MIN_EYE_DISTANCE = 20.0   # 最小眼距
-MIN_FACE_SIZE = 50        # 最小人脸尺寸
+MIN_EYE_DISTANCE = 20.0   # 最小眼距（保持不变）
+
+# MIN_FACE_SIZE 已弃用 - 现在由 MIN_FACE_SIZE_RATIO 动态计算
+# MIN_FACE_SIZE = 50  # 自动计算，不需要手动设置
 
 # ============================================================================
 # 质量评估配置
@@ -61,25 +95,24 @@ MIN_SHARPNESS = 0.1
 
 # 质量分数权重
 QUALITY_WEIGHTS = {
-    'pose': 0.5,        # 姿态分数权重
+    'pose': 0.4,        # 姿态分数权重
     'eye_distance': 0.25,  # 眼距权重
     'confidence': 0.25,    # 置信度权重
 }
 
-# 用于保存前/保存后图像质量验证的阈值（可调整）
-MIN_SAVE_FACE_SIZE = 100  # 保存时最小人脸像素尺寸（长或宽）
+# MIN_SAVE_FACE_SIZE 已弃用 - 现在由 MIN_FACE_SIZE_RATIO 动态计算
+# MIN_SAVE_FACE_SIZE = 60  # 自动计算，不需要手动设置
 
-# 人脸占原图的最小百分比（用于检测误入镜的小人脸）
-# 如果人脸区域 < 原图面积 * 此阈值，则认为是误入镜，直接丢弃
-MIN_FACE_TO_IMAGE_RATIO = 0.006  # 最小占比 1%（范围：0.0-1.0）
-
+# 保存验证器详细配置 - 自动根据 MIN_FACE_SIZE_RATIO 计算
+# 用途：保存图像前的多维度质量检查（宽高、比例、亮度、对比度）
+# 应用：FaceSaveValidator 类的 validate_face_image() 方法
 FACE_SAVE_VALIDATOR = {
-    'min_face_width': 40,
-    'min_face_height': 40,
-    'max_aspect_ratio': 1.5,
-    'min_brightness': 50,
-    'max_brightness': 200,
-    'min_contrast': 0.15,
+    # 宽高限制 - 分别限制宽和高（自动计算，无需手动修改）
+    'min_face_width': None,    # 自动计算
+    'min_face_height': None,   # 自动计算
+    'min_brightness': 0,       # 最小亮度（移除上限以支持各种光照条件）
+    'max_brightness': 255,     # 最大亮度（不过滤过曝的脸）
+    'min_contrast': 0.0,       # 最小对比度（不过滤低对比度的脸）
 }
 
 # ============================================================================
@@ -90,13 +123,14 @@ FACE_SAVE_VALIDATOR = {
 SIMILARITY_METRIC = 'cosine'  # 'cosine' | 'euclidean'
 
 # 相似度阈值
-# - cosine: 0-1 (默认使用 0.5，越高越严格)
-# - euclidean: 0-2 (推荐 0.5-1.0)
-DEDUP_THRESHOLD = 0.5  # 标准模式：0.5（已统一到0.5）
+# - cosine: 0-1 (默认使用 0.3，越高越严格)
+# - euclidean: 0-2 (推荐 0.3-0.8)
+# 改进方案：降低至 0.30，配合多帧聚合embedding以提高匹配准确性
+DEDUP_THRESHOLD = 0.3  # 标准模式：从 0.4 改为 0.3（支持多帧聚合方案）
 
 # 严格模式下的去重阈值（更严格的匹配标准）
-# 已按要求统一为 0.5
-STRICT_DEDUP_THRESHOLD = 0.5  # 严格模式：0.5
+# 改进方案：保持 0.35，作为严格检查的第二阶段
+STRICT_DEDUP_THRESHOLD = 0.35  # 严格模式：从 0.4 改为 0.35
 
 # ============================================================================
 # 人脸对齐配置
@@ -108,7 +142,7 @@ ALIGNED_FACE_SIZE = (112, 112)
 # 对齐参数
 ALIGNMENT_PARAMS = {
     'desired_left': (0.35, 0.35),  # 左眼期望位置
-    'desired_right_x': 0.55,        # 右眼期望x位置
+    'desired_right_x': 0.45,        # 右眼期望x位置
 }
 
 # ============================================================================
@@ -116,7 +150,7 @@ ALIGNMENT_PARAMS = {
 # ============================================================================
 
 # 帧采样间隔
-DEFAULT_SAMPLE_INTERVAL = 1
+DEFAULT_SAMPLE_INTERVAL = 5
 
 # 预览视频编码
 PREVIEW_CODEC = 'mp4v'
@@ -125,17 +159,19 @@ PREVIEW_CODEC = 'mp4v'
 # 保存策略
 # ============================================================================
 
-# 保存策略
-SAVE_STRATEGY = 'best_end'  # 'first' | 'best_end'
-# - 'first': 发现第一个正脸时保存
-# - 'best_end': track结束时保存质量最好的正脸
+# 全局统一策略：使用 'first' 策略
+# - 第一个正脸立即保存，确保实时处理能力
+# - 支持多帧聚合：当track中有多帧时，自动使用平均embedding
+# - 自动降级：track中只有单帧时，自动使用单帧embedding
+# - 健壮性：完整的错误处理和边界情况覆盖
+SAVE_STRATEGY = 'first'
 
 # ============================================================================
 # 目录和文件配置
 # ============================================================================
 
 # 默认输出目录
-DEFAULT_OUTPUT_DIR = 'detected_faces_frontal'
+DEFAULT_OUTPUT_DIR = './output/high_quality'
 
 # 人脸图像文件名模板
 FACE_IMAGE_TEMPLATE = 'face_{pid:05d}_track{tid}_{suffix}.jpg'
@@ -208,23 +244,7 @@ SAVE_DEBUG_IMAGES = False
 # 调试图像保存目录
 DEBUG_OUTPUT_DIR = 'debug_images'
 
-# ============================================================================
-# [参数调优指南]
-# ============================================================================
-# MIN_FACE_TO_IMAGE_RATIO（人脸占原图最小百分比）:
-#   - 0.10 (10%):  非常宽松，会保留很小的远处人脸
-#   - 0.20 (20%):  较宽松，可保留中等的误入镜人脸
-#   - 0.30 (30%):  平衡模式（默认），过滤大多数误入镜
-#   - 0.50 (50%):  严格，只保留占图较大的人脸
-# 
-# MIN_SAVE_FACE_SIZE（保存时最小人脸绝对尺寸）:
-#   - 50px:  非常宽松
-#   - 100px: 平衡（默认）
-#   - 150px: 较严格
-
-# ============================================================================
-# 预设配置
-# ============================================================================
+# ============================================================================\n# [5个阶段的尺寸限制详解与调优指南]\n# ============================================================================\n# \n# 系统按5个阶段对人脸进行过滤，每个阶段更严格，理解这些阶段很重要：\n#\n# ┌─────────────────────────────────────────────────────────────────────┐\n# │ 阶段1：MIN_BOX_SIZE                                                  │\n# │ 位置：检测器输出 → DetectionTracker.update()                        │\n# │ 目的：过滤检测器输出中的极小误检（如灰尘、噪点）                   │\n# │ 建议：40 (宽松) / 50 (平衡) / 70 (严格)                            │\n# └─────────────────────────────────────────────────────────────────────┘\n#\n# ┌─────────────────────────────────────────────────────────────────────┐\n# │ 阶段2：min_box_area (ByteTrack)                                      │\n# │ 位置：ByteTrack跟踪器 → 轨迹管理                                   │\n# │ 目的：过滤跟踪器中的小轨迹噪声                                      │\n# │ 计算：像素值 = sqrt(min_box_area) * sqrt(min_box_area)              │\n# │ 例如：1225 = 35×35 像素的框面积                                     │\n# │ 建议：500 (宽松) / 1225 (平衡) / 2500 (严格)                       │\n# └─────────────────────────────────────────────────────────────────────┘\n#\n# ┌─────────────────────────────────────────────────────────────────────┐\n# │ 阶段3：MIN_FACE_SIZE                                                 │\n# │ 位置：质量评估 → 眼距有效性检查                                    │\n# │ 目的：在计算眼距时，确保人脸足够大以准确定位关键点                 │\n# │ 建议：40 (宽松) / 50 (平衡) / 80 (严格)                            │\n# └─────────────────────────────────────────────────────────────────────┘\n#\n# ┌─────────────────────────────────────────────────────────────────────┐\n# │ 阶段4：MIN_SAVE_FACE_SIZE                                            │\n# │ 位置：保存前的绝对尺寸检查（最后一关）                              │\n# │ 目的：防止太小的人脸被保存（即使通过了所有前期检查）                │\n# │ ⚠️  注意：这是\"能否被保存\"的最后关卡，设置过高会导致0输出！          │\n# │ 建议：30 (宽松) / 40 (平衡) / 60 (严格)                            │\n# │ 常见问题：当输出为0时，优先检查这个值！                             │\n# └─────────────────────────────────────────────────────────────────────┘\n#\n# ┌─────────────────────────────────────────────────────────────────────┐\n# │ 阶段5：FACE_SAVE_VALIDATOR (min_face_width/height + 宽高比)          │\n# │ 位置：保存前的多维度质量检查                                         │\n# │ 目的：分别检查宽度、高度、宽高比（比阶段4更详细）                  │\n# │ 特点：独立检查宽和高，允许非常宽或非常高的异形脸                   │\n# │ 建议：min_face_width/height 40px (宽松) / 50px (平衡) / 80px (严格)│\n# └─────────────────────────────────────────────────────────────────────┘\n#\n# [调优策略]\n# \n# 如果输出为0，按以下顺序检查：\n#   1. 先检查 MIN_SAVE_FACE_SIZE（通常是主要原因）\n#   2. 再检查 FACE_SAVE_VALIDATOR (min_face_width/height)\n#   3. 最后检查 MIN_FACE_SIZE 和 min_box_area\n#\n# 如果想增加输出数量：\n#   → 逐步降低上述参数，从最后一个阶段开始（MIN_SAVE_FACE_SIZE）\n#   → 每次改一个参数，观察影响\n#   → 不要一次性全部降低\n#\n# 如果想减少低质人脸：\n#   → 逐步提高这些参数\n#   → 同时调整 FACE_SAVE_VALIDATOR 的亮度/对比度检查\n#\n\n# ============================================================================\n# 预设配置\n# ============================================================================
 
 # 预设配置组合
 PRESETS = {
@@ -233,7 +253,7 @@ PRESETS = {
         'pitch_threshold': 15.0,
         'roll_threshold': 10.0,
         'min_face_size': 100,
-        'dedup_threshold': 0.5,
+        'dedup_threshold': 0.4,
         'confidence_threshold': 0.8,
         'description': '高质量模式：只保留正脸且质量高的人脸'
     },
@@ -242,7 +262,7 @@ PRESETS = {
         'pitch_threshold': 25.0,
         'roll_threshold': 15.0,
         'min_face_size': 50,
-        'dedup_threshold': 0.5,
+        'dedup_threshold': 0.4,
         'confidence_threshold': 0.8,
         'description': '平衡模式：默认推荐配置'
     },
@@ -251,7 +271,7 @@ PRESETS = {
         'pitch_threshold': 40.0,
         'roll_threshold': 30.0,
         'min_face_size': 30,
-        'dedup_threshold': 0.5,
+        'dedup_threshold': 0.4,
         'confidence_threshold': 0.8,
         'sample_interval': 5,
         'description': '快速模式：优先处理速度'
@@ -261,7 +281,7 @@ PRESETS = {
         'pitch_threshold': 60.0,
         'roll_threshold': 45.0,
         'min_face_size': 20,
-        'dedup_threshold': 0.5,
+        'dedup_threshold': 0.4,
         'confidence_threshold': 0.8,
         'description': '宽松模式：保留尽可能多的人脸'
     }
@@ -279,3 +299,56 @@ def list_presets():
     """列出所有可用的预设"""
     for name, config in PRESETS.items():
         print(f"{name:15s} - {config['description']}")
+
+
+def calculate_size_thresholds(frame_height: int, frame_width: int, ratio: float = None) -> dict:
+    """
+    根据视频分辨率和占图比例，动态计算所有尺寸阈值
+    
+    Args:
+        frame_height: 视频高度（像素）
+        frame_width: 视频宽度（像素）
+        ratio: 人脸面积占全图面积的最小比例（如不提供，使用 MIN_FACE_SIZE_RATIO）
+    
+    Returns:
+        包含所有尺寸参数的字典
+    
+    例如：
+        >>> thresholds = calculate_size_thresholds(1080, 1920)
+        >>> print(thresholds)
+        {
+            'min_box_size': 40,           # 检测器最小尺寸
+            'min_box_area': 1200,         # ByteTrack最小框面积
+            'min_face_size': 50,          # 眼距检查最小尺寸
+            'min_save_face_size': 40,     # 保存前最小尺寸
+            'min_face_width': 40,         # 最小宽度
+            'min_face_height': 40,        # 最小高度
+            'min_brightness': 50,         # 最小亮度
+            'max_brightness': 200,        # 最大亮度
+            'min_contrast': 0.15          # 最小对比度
+        }
+    """
+    import math
+    
+    if ratio is None:
+        ratio = MIN_FACE_SIZE_RATIO
+    
+    # 计算关键尺寸：人脸最小面积
+    frame_area = frame_height * frame_width
+    min_face_area = int(frame_area * ratio)
+    
+    # 假设人脸大约是正方形，计算最小边长
+    min_face_size = int(math.sqrt(min_face_area))
+    
+    # 由min_face_size推导其他参数，保持相对关系
+    return {
+        'min_box_size': max(30, int(min_face_size * 0.6)),           # 检测器过滤
+        'min_box_area': max(500, int(min_face_size ** 2 * 0.8)),     # ByteTrack轨迹过滤
+        'min_face_size': min_face_size,                              # 眼距检查
+        'min_save_face_size': max(30, int(min_face_size * 0.8)),     # 保存前过滤
+        'min_face_width': max(30, int(min_face_size * 0.9)),         # 保存验证：宽度
+        'min_face_height': max(30, int(min_face_size * 0.9)),        # 保存验证：高度
+        'min_brightness': FACE_SAVE_VALIDATOR['min_brightness'],     # 保持不变
+        'max_brightness': FACE_SAVE_VALIDATOR['max_brightness'],     # 保持不变
+        'min_contrast': FACE_SAVE_VALIDATOR['min_contrast']          # 保持不变
+    }

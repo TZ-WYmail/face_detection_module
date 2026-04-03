@@ -223,6 +223,12 @@ class HeadPoseEstimator:
         
         pose_score = (yaw_score + pitch_score + roll_score) / 3.0
         
+        # 添加详细的角度检查日志
+        logger.info(f"   [姿态检查] yaw={yaw:.1f}° (±{yaw_threshold}°), "
+                   f"pitch={pitch:.1f}° (±{pitch_threshold}°), "
+                   f"roll={roll:.1f}° (±{roll_threshold}°) → "
+                   f"{'✓正脸' if is_frontal else '⚠️非正脸'}, 姿态分数={pose_score:.3f}")
+        
         return is_frontal, pose_score
 
 
@@ -290,7 +296,11 @@ def evaluate_face_quality(
     # 获取检测信息用于日志
     det_bbox = det.get('bbox', None)
     det_conf = det.get('confidence', 0.0)
-    # 仅在被拒绝时输出日志，减少冗余输出
+    if det_bbox is not None:
+        det_w = det_bbox[2] - det_bbox[0]
+        det_h = det_bbox[3] - det_bbox[1]
+        logger.info(f"[质量评估] 人脸尺寸={det_w:.0f}x{det_h:.0f}px, 置信度={det_conf:.3f}, "
+                   f"姿态阈值=(yaw={yaw_threshold}°, pitch={pitch_threshold}°, roll={roll_threshold}°)")
     
     # ============= 新增：物理图像质量检查 =============
     image_quality_score = 1.0
@@ -298,17 +308,11 @@ def evaluate_face_quality(
         try:
             gray = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
             
-            # 亮度检查（太暗或太亮都不好，推荐50-210）
+            # 亮度检查已移除 - 允许任何亮度级别的人脸
             brightness = np.mean(gray)
-            if brightness < 50 or brightness > 210:
-                reasons.append(f'亮度不佳: {brightness:.1f}（推荐50-210）')
-                image_quality_score *= 0.5
             
-            # 对比度检查（标准差，推荐>= 20）
+            # 对比度检查已移除 - 允许任何对比度的人脸
             contrast = np.std(gray)
-            if contrast < 20:
-                reasons.append(f'对比度不足: {contrast:.1f}（推荐>=20）')
-                image_quality_score *= 0.6
             
             # 清晰度检查（Laplacian方差，推荐>= 100）
             # 修复：使用正确的 ddepth 参数 CV_64F
@@ -358,41 +362,21 @@ def evaluate_face_quality(
         face_width = bbox[2] - bbox[0]
         face_height = bbox[3] - bbox[1]
         
-        # ============= 新增：计算人脸占原图的百分比（检测误入镜） =============
-        # 如果人脸区域小于原图的 30%，认定为误入镜，直接丢弃
-        if image_shape is not None:
-            img_height, img_width = image_shape[:2]
-            face_area = face_width * face_height
-            image_area = img_width * img_height
-            
-            if image_area > 0:
-                face_area_ratio = face_area / image_area
-                # 从 config 获取最小占比阈值（默认 30%）
-                min_face_ratio = getattr(cfg, 'MIN_FACE_TO_IMAGE_RATIO', 0.30)
-                
-                if face_area_ratio < min_face_ratio:
-                    reason = (f'人脸占图太小（误入镜）: {face_area_ratio*100:.1f}% < {min_face_ratio*100:.1f}%')
-                    reasons.append(reason)
-                    if debug:
-                        logger.warning(f"❌ {reason}")
-                    # 直接返回，丢弃该检测
-                    return FaceQualityResult(
-                        is_high_quality=False,
-                        is_frontal=False,
-                        quality_score=0.0,
-                        pose_score=0.0,
-                        yaw=0.0, pitch=0.0, roll=0.0,
-                        reasons=reasons
-                    )
+        # 注：已删除人脸占原图百分比的检查（MIN_FACE_TO_IMAGE_RATIO）
+        # 该检查会导致视频中的远距人脸被过度过滤
+        # 现已改为仅依赖MIN_SAVE_FACE_SIZE进行绝对尺寸检查
         
         # 固定最小人脸尺寸（从 config 获取，防止误入镜的小人脸被识别）
         fixed_min_size = getattr(cfg, 'MIN_SAVE_FACE_SIZE', 100)
         
-        if face_width < fixed_min_size or face_height < fixed_min_size:
-            reason = f'人脸尺寸过小: {face_width}x{face_height}px（最小{fixed_min_size}px）'
+        logger.info(f"   [尺寸检查] 宽度={face_width}px (最小{fixed_min_size}px), "
+                   f"高度={face_height}px (最小{fixed_min_size}px), "
+                   f"通过={face_width >= fixed_min_size or face_height >= fixed_min_size}")
+        
+        if face_width < fixed_min_size and face_height < fixed_min_size:
+            reason = f'人脸尺寸过小: {face_width}x{face_height}px（最小{fixed_min_size}px），宽高至少一个需≥{fixed_min_size}px'
             reasons.append(reason)
-            if debug:
-                logger.warning(f"❌ {reason}")
+            logger.warning(f"❌ [尺寸检查] {reason}")
             # 直接返回，不继续处理过小的人脸
             return FaceQualityResult(
                 is_high_quality=False,
@@ -406,11 +390,7 @@ def evaluate_face_quality(
         # 检查宽高比（防止拉伸或压扁的人脸）
         aspect_ratio = face_width / face_height if face_height > 0 else 1.0
         
-        if aspect_ratio < 0.6 or aspect_ratio > 1.6:
-            reason = f'人脸长宽比不正常: {aspect_ratio:.2f}'
-            reasons.append(reason)
-            if debug:
-                logger.debug(f"⚠️  {reason}")
+        # 宽高比检查已移除 - 允许任何宽高比的人脸（包括极端异形脸）
     
     # 3. 检查眼距
     left_eye = kps[0]
@@ -445,10 +425,11 @@ def evaluate_face_quality(
     )
     
     if not is_frontal:
-        reason = f'非正脸: yaw={yaw:.1f}°, pitch={pitch:.1f}°, roll={roll:.1f}°'
+        reason = f'非正脸: yaw={yaw:.1f}°, pitch={pitch:.1f}°, roll={roll:.1f}°（记录为参考，但仍保留此脸）'
         reasons.append(reason)
-        if debug:
-            logger.warning(f"❌ {reason}")
+        logger.info(f"   ⚠️ {reason}")
+    else:
+        logger.info(f"   ✅ 正脸")
     
     # 6. 计算综合质量分数
     # 眼距分数
@@ -463,8 +444,11 @@ def evaluate_face_quality(
                      eye_dist_score * 0.25 + 
                      confidence_score * 0.25) * image_quality_score
     
+    logger.info(f"   [综合分数] pose={pose_score:.3f}*0.5 + eye_dist={eye_dist_score:.3f}*0.25 + conf={confidence_score:.3f}*0.25 = {quality_score:.3f}")
+    
     # 7. 判断是否高质量
-    is_high_quality = is_frontal and len(reasons) == 0
+    # ⚠️改为：不要求必须是正脸，只要没有致命问题就保留
+    is_high_quality = len(reasons) == 0
     
     if strict_mode:
         # 严格模式下，要求更高的姿态分数
@@ -890,18 +874,17 @@ class FaceSaveQualityValidator:
         """
         h, w = img.shape[:2]
         
-        # 1. 检查尺寸
-        if w < self.min_face_width or h < self.min_face_height:
-            reason = f"人脸尺寸过小: {w}x{h} (最小: {self.min_face_width}x{self.min_face_height})"
-            self.logger.warning(f"⚠️  质量检验失败 ({img_path}): {reason}")
-            return False, reason
+        self.logger.info(f"[保存验证] 图像尺寸={w}x{h}px, min_width={self.min_face_width}px, min_height={self.min_face_height}px")
         
-        # 2. 检查宽高比（避免过度变形）
-        aspect_ratio = max(w, h) / min(w, h)
-        if aspect_ratio > self.max_aspect_ratio:
-            reason = f"人脸变形过度: 宽高比={aspect_ratio:.2f} (最大: {self.max_aspect_ratio})"
-            self.logger.warning(f"⚠️  质量检验失败 ({img_path}): {reason}")
+        # 1. 检查尺寸（只要长或宽其中一个满足即可）
+        if w < self.min_face_width and h < self.min_face_height:
+            reason = f"人脸尺寸过小: {w}x{h} (最小宽: {self.min_face_width}px 或 最小高: {self.min_face_height}px)"
+            self.logger.warning(f"❌ [保存验证-尺寸] {reason}")
             return False, reason
+        else:
+            self.logger.info(f"   ✅ [尺寸] 通过 (宽={w}>={self.min_face_width} or 高={h}>={self.min_face_height})")
+        
+        # 2. 宽高比检查已移除 - 允许任何宽高比的人脸（包括极端异形脸）
         
         # 3. 检查亮度
         if len(img.shape) == 3:
@@ -910,17 +893,12 @@ class FaceSaveQualityValidator:
             gray = img
         
         brightness = gray.mean()
-        if brightness < self.min_brightness or brightness > self.max_brightness:
-            reason = f"人脸亮度异常: {brightness:.1f} (应在 {self.min_brightness}-{self.max_brightness})"
-            self.logger.warning(f"⚠️  质量检验失败 ({img_path}): {reason}")
-            return False, reason
+        contrast = gray.std()
+        # 亮度检查已移除 - 允许任何亮度级别的人脸
+        self.logger.info(f"   [亮度/对比度] 亮度={brightness:.1f}, 对比度={contrast:.1f} (检查已移除)")
         
         # 4. 检查对比度（避免严重模糊）
-        contrast = gray.std() / 255.0
-        if contrast < self.min_contrast:
-            reason = f"人脸对比度过低: {contrast:.3f} (最小: {self.min_contrast})"
-            self.logger.warning(f"⚠️  质量检验失败 ({img_path}): {reason}")
-            return False, reason
+        # 对比度检查已移除 - 允许任何对比度的人脸
         
         # 5. 检查人脸区域（避免全是背景）
         # 检查非背景像素的比例
@@ -933,13 +911,14 @@ class FaceSaveQualityValidator:
             else:
                 non_bg_ratio = np.mean(non_bg_mask)
             
+            self.logger.info(f"   [背景] 非背景像素占比={non_bg_ratio*100:.1f}%")
             if non_bg_ratio < 0.3:
                 reason = f"人脸内容过少: 仅{non_bg_ratio*100:.1f}% (最少30%)"
-                self.logger.warning(f"⚠️  质量检验失败 ({img_path}): {reason}")
+                self.logger.warning(f"❌ [保存验证-背景] {reason}")
                 return False, reason
         
         # 如果所有检验都通过
-        self.logger.info(f"✅ 质量检验通过 ({img_path}): 尺寸={w}x{h}, 亮度={brightness:.1f}, 对比度={contrast:.3f}")
+        self.logger.info(f"✅ [保存验证] 所有检查通过: 尺寸={w}x{h}, 亮度={brightness:.1f}, 对比度={contrast:.1f}")
         return True, "通过"
 
 
@@ -1411,7 +1390,9 @@ class Deduper:
         if emb is None or len(self.embeddings) == 0:
             return None
         
-        emb = emb / (np.linalg.norm(emb) + 1e-12)
+        emb_orig = np.asarray(emb, dtype=np.float32)
+        emb_orig_norm = np.linalg.norm(emb_orig)
+        emb = emb / (emb_orig_norm + 1e-12)
         
         if self.metric == 'cosine':
             sims = [float(np.dot(e, emb)) for e in self.embeddings]
@@ -1420,12 +1401,12 @@ class Deduper:
             if debug:
                 # 显示前3个候选人脸的相似度（用于调试）
                 top_3_indices = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:3]
-                logger.info(f"[去重候选] 前3个候选: " + 
-                           " | ".join([f"ID={self.ids[i]:05d}(sim={sims[i]:.4f})" for i in top_3_indices]))
+                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(sim={sims[i]:.4f})" for i in top_3_indices])
+                logger.info(f"[去重候选] 前3个候选: {top_3_info} | 输入emb_dim={emb_orig.shape[0]} | norm={emb_orig_norm:.6f}")
             
             if sims[best_idx] >= self.threshold:
                 matched_id = self.ids[best_idx]
-                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | sim={sims[best_idx]:.4f}")
+                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | sim={sims[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
                 return matched_id
             return None
         else:
@@ -1435,12 +1416,12 @@ class Deduper:
             if debug:
                 # 显示前3个候选人脸的距离（用于调试）
                 top_3_indices = sorted(range(len(dists)), key=lambda i: dists[i])[:3]
-                logger.info(f"[去重候选] 前3个候选: " + 
-                           " | ".join([f"ID={self.ids[i]:05d}(dist={dists[i]:.4f})" for i in top_3_indices]))
+                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(dist={dists[i]:.4f})" for i in top_3_indices])
+                logger.info(f"[去重候选] 前3个候选: {top_3_info} | 输入emb_dim={emb_orig.shape[0]} | norm={emb_orig_norm:.6f}")
             
             if dists[best_idx] <= self.threshold:
                 matched_id = self.ids[best_idx]
-                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | dist={dists[best_idx]:.4f}")
+                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | dist={dists[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
                 return matched_id
             return None
 
@@ -1465,8 +1446,9 @@ class Deduper:
         self.ids.append(pid)
         self.metadata.append(metadata or {})
         
-        # 记录新添加的人脸（仅输出新ID，简化日志）
-        logger.info(f"✨ 新建人脸ID: {pid:05d}")
+        # 记录新添加的人脸，包含维度和统计信息以便调试
+        logger.info(f"✨ 新建人脸ID: {pid:05d} | emb_dim={emb.shape[0]} | L2_norm={np.linalg.norm(emb):.6f} | "
+                   f"mean={np.mean(emb):.6f} | std={np.std(emb):.6f}")
         
         return pid
 

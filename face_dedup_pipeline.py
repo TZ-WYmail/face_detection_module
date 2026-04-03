@@ -36,6 +36,7 @@ from face_dedup_utils import (
     HeadPoseEstimator, save_face_pretty, FaceSaveQualityValidator,
     FaceValidityChecker, DetectionTracker, TrackHistory
 )
+from simple_face_validator import SimpleFaceValidator
 
 import config as cfg
 
@@ -320,6 +321,14 @@ class FrontalFaceExtractor:
             # 回退到默认值以防配置项缺失
             self.quality_validator = FaceSaveQualityValidator()
         
+        # 简化版人脸验证器（用于实时质量评分）
+        # 配置项：质量阈值、置信度阈值、严格模式
+        self.face_validator = SimpleFaceValidator(
+            quality_threshold=getattr(args, 'quality_threshold', 0.2),
+            confidence_threshold=getattr(args, 'confidence_threshold', 0.4),
+            strict_mode=getattr(args, 'strict_mode', False)
+        )
+        
         # 从detector中获取人脸有效性检查器（ONNX模式下使用）
         self.face_validity_checker = self.det.face_validator if self.det.face_validator is not None else None
 
@@ -527,20 +536,44 @@ class FrontalFaceExtractor:
             except Exception as e:
                 logger.debug(f"frame级别检测失败: {e}")
         
-        # 构建一个kps查找表：根据bbox匹配找到对应的kps
+        # 构建两个查找表：kps 和 embedding（避免混用不同来源的特征）
         bbox_to_kps = {}
+        bbox_to_embedding = {}
         if frame_detections:
             for det in frame_detections:
-                if det and det.get('kps') is not None:
+                if det:
                     bbox = det.get('bbox')
                     if bbox:
                         # 以bbox作为key（四舍五入到整数）
                         bbox_key = tuple(map(int, bbox))
-                        bbox_to_kps[bbox_key] = det.get('kps')
+                        if det.get('kps') is not None:
+                            bbox_to_kps[bbox_key] = det.get('kps')
+                        if det.get('embedding') is not None:
+                            bbox_to_embedding[bbox_key] = det.get('embedding')
         
         # ============= 帧级去重：收集本帧的所有人脸embedding =============
         # 同一帧中可能出现多个人脸，如果相似度高应该去重
         frame_embeddings = []  # [(tid, bbox, kps, emb, quality_result), ...]
+        
+        # ============= 帧级过滤：预先计算每个人脸的尺寸，找出最大人脸 =============
+        # 目的：在同一帧中，只保存尺寸最大的人脸，跳过其他较小的人脸（减少冗余输出）
+        face_sizes = {}  # {j: (size, bbox)} - 记录每个人脸的尺寸
+        max_size_idx = -1
+        max_size = 0
+        
+        for j in range(len(xyxy)):
+            x1, y1, x2, y2 = map(int, xyxy[j])
+            width = x2 - x1
+            height = y2 - y1
+            size = width * height  # 用面积作为尺寸的度量
+            face_sizes[j] = (size, (x1, y1, x2, y2))
+            
+            # 找出最大的人脸
+            if size > max_size:
+                max_size = size
+                max_size_idx = j
+        
+        logger.debug(f"📐 本帧找到 {len(xyxy)} 个人脸，最大人脸索引={max_size_idx}，尺寸={max_size}px²")
         
         # ============= 处理每个tracked box =============
         
@@ -563,11 +596,11 @@ class FrontalFaceExtractor:
             face_crop = frame[cy1:cy2, cx1:cx2]
             
             # ============= 步骤 3 & 4: 提取关键点和评估质量 =============
-            # 策略：优先使用frame-level detect的kps（复用步骤2的输出）
+            # 策略：优先使用frame-level detect的kps和embedding（避免混用不同来源特征）
             kps = None
             det_embedding = None
             
-            # 尝试从frame-level detection的结果中找到匹配的kps
+            # 尝试从frame-level detection的结果中找到匹配的kps和embedding
             bbox_key = (x1, y1, x2, y2)
             if bbox_key in bbox_to_kps:
                 kps = bbox_to_kps[bbox_key]
@@ -577,18 +610,17 @@ class FrontalFaceExtractor:
                     if (abs(stored_bbox[0]-x1) < 5 and abs(stored_bbox[1]-y1) < 5 and
                         abs(stored_bbox[2]-x2) < 5 and abs(stored_bbox[3]-y2) < 5):
                         kps = stored_kps
+                        # 同时尝试获取对应的embedding
+                        if stored_bbox in bbox_to_embedding:
+                            det_embedding = bbox_to_embedding[stored_bbox]
                         break
             
-            # 如果仍然没有kps，尝试在face_crop上进行第二次检测（备用方案）
-            if kps is None:
-                try:
-                    found = self.det.detect(face_crop, conf_threshold=self.args.conf)
-                    if found and found[0]:
-                        det_info = found[0]
-                        kps = det_info.get('kps')
-                        det_embedding = det_info.get('embedding')
-                except Exception:
-                    pass
+            # 如果在kps查询中没有找到embedding，再尝试直接的bbox_key查询
+            if det_embedding is None and bbox_key in bbox_to_embedding:
+                det_embedding = bbox_to_embedding[bbox_key]
+            
+            # 重要：不再进行第二次检测以获取embedding
+            #（第二次检测会导致不同尺寸的特征，与第一次frame-level detection的特征不可比较）
             
             # 评估人脸质量（使用完整的检测信息和实际图像）
             quality_result = evaluate_face_quality(
@@ -614,11 +646,18 @@ class FrontalFaceExtractor:
                                 f"宽高比={val_scores.get('aspect_ratio', 0):.2f}")
                     continue  # 跳过这个检测
             
+            # ============= 帧级过滤：只处理同一帧中的最大人脸 =============
+            # 目的：在一帧中出现多个人脸时，只处理尺寸最大的那个，其他跳过
+            if j != max_size_idx and len(xyxy) > 1:
+                size, bbox = face_sizes[j]
+                logger.debug(f"⏭️  跳过较小人脸: track{tid} 尺寸={size}px² (本帧最大={max_size}px², 最大索引={max_size_idx})")
+                continue  # 跳过这个不是最大的人脸
+            
             # 对齐人脸（使用之前获取的kps，或从检测中获取）
             aligned = align_face(face_crop, kps)
             
             # ============= 步骤 7: 提取 Embedding =============
-            # 优先使用frame-level detection中的embedding，否则从原始人脸裁剪中提取
+            # 统一使用frame-level detection的embedding，避免混用不同来源的特征
             emb = None
             if det_embedding is not None:
                 emb = np.asarray(det_embedding, dtype=np.float32)
@@ -626,9 +665,12 @@ class FrontalFaceExtractor:
                 norm = np.linalg.norm(emb)
                 if norm > 0:
                     emb = emb / norm
+                logger.debug(f"📊 使用frame-level embedding (tid={tid}, shape={emb.shape})")
             else:
-                # 备用方案：使用原始 face_crop（而非aligned）的 HSV 直方图
-                emb = SimpleEmbedder.get_embedding_from_detection({}, face_crop)
+                # 注意：如果没有embedding，直接跳过该人脸，不使用HSV直方图作为备用
+                # 原因：不同来源的embedding特征空间不同，参与计算会严重影响相似度
+                logger.debug(f"⚠️  跳过无embedding的人脸 (tid={tid}) 以避免混用不同特征空间")
+                continue
             
             # 获取或创建 track 记录
             rec = track_db.get(tid)
@@ -642,11 +684,28 @@ class FrontalFaceExtractor:
             
             # 只处理正脸
             if quality_result.is_frontal:
+                # ================ 验证步骤：画质评分 + 置信度检查 ================
+                # 在进行去重之前，确保人脸质量足够好
+                is_valid, computed_quality, reason = self.face_validator.validate_face(
+                    face_crop=face_crop,
+                    confidence=conf,
+                    embedding=emb
+                )
+                
+                if not is_valid:
+                    logger.debug(f"⚠️  人脸验证失败: track={tid} | frame={frame_count} | {reason}")
+                    continue  # 跳过这个人脸，不进行后续处理
+                
+                logger.debug(f"✅ 人脸验证通过: track={tid} | 画质={computed_quality:.4f}")
+                
+                # 更新质量分数为计算出的分数
+                actual_quality_score = max(quality_result.quality_score, computed_quality)
+                
                 rec.frontal_count += 1
                 
                 # 更新最佳正脸
-                if quality_result.quality_score > rec.best_quality_score:
-                    rec.best_quality_score = quality_result.quality_score
+                if actual_quality_score > rec.best_quality_score:
+                    rec.best_quality_score = actual_quality_score
                     rec.best_pose_score = quality_result.pose_score
                     rec.best_image = aligned.copy() if aligned is not None else face_crop.copy()
                     rec.best_yaw = quality_result.yaw
@@ -659,30 +718,74 @@ class FrontalFaceExtractor:
                 frame_embeddings.append({
                     'tid': tid,
                     'emb': emb,
-                    'quality_score': quality_result.quality_score,
+                    'quality_score': actual_quality_score,
                     'aligned': aligned.copy() if aligned is not None else face_crop.copy(),
                     'rec': rec
                 })
             
-            # 保存策略: first - 第一个正脸立即保存
-            if self.args.save_strategy == 'first' and not rec.first_saved:
+            # ================ 无论如何都使用 TrackHistory 检查连续重复 ================
+            # 对所有正脸调用 track_history.update，记录跟踪历史信息
+            if quality_result.is_frontal and emb is not None:
+                should_save_this_frame = self.track_history.update(tid, frame_count, actual_quality_score)
+                logger.debug(f"📹 正在处理轨迹ID={tid} | 帧={frame_count} | 质量分数={actual_quality_score:.4f} | "
+                           f"should_save={should_save_this_frame}")
+            
+            # 保存策略: first - 第一个正脸立即保存（全局唯一策略）
+            if not rec.first_saved:
                 if quality_result.is_frontal and emb is not None:
-                    logger.debug(f"📹 正在处理轨迹ID={tid} | 帧={frame_count} | 质量分数={quality_result.quality_score:.4f}")
-                    
                     # ================ 连续重复检查：避免保存同一person的重复帧 ================
-                    # 使用 track_history 检查是否应该保存（连续出现则跳过）
-                    should_save_this_frame = self.track_history.update(tid, frame_count, quality_result.quality_score)
+                    # 根据 track_history 的结果决定是否保存
                     if not should_save_this_frame:
                         logger.info(f"⏭️  跳过连续重复帧: track{tid} 在frame{frame_count} 连续出现，质量不如最好帧")
                         continue  # 跳过这一帧的保存
                     
-                    pid = self.deduper.find_match(emb, debug=True)
+                    # ================ 改进方案1：在first策略中启用多帧聚合 ================
+                    # 使用多帧汇总的embedding进行去重，提高相似度准确性
+                    try:
+                        if len(rec.embeddings) > 1:
+                            agg_emb = np.mean(np.stack(rec.embeddings, axis=0), axis=0)
+                            # 检查聚合embedding的合法性
+                            if agg_emb is None or agg_emb.size == 0:
+                                logger.warning(f"⚠️  聚合embedding无效，降级到单帧: track{tid}")
+                                pid = self.deduper.find_match(emb, debug=True)
+                            else:
+                                logger.debug(f"📊 First策略：使用聚合embedding ({len(rec.embeddings)}帧的平均，norm={np.linalg.norm(agg_emb):.6f})")
+                                pid = self.deduper.find_match(agg_emb, debug=True)
+                        else:
+                            logger.debug(f"📊 First策略：仅有单帧，使用单帧embedding（norm={np.linalg.norm(emb):.6f}）")
+                            pid = self.deduper.find_match(emb, debug=True)
+                    except Exception as e:
+                        logger.error(f"❌ embedding聚合过程出错: track{tid}, error={e}")
+                        # 降级处理：使用单帧embedding
+                        try:
+                            pid = self.deduper.find_match(emb, debug=True)
+                        except Exception as e2:
+                            logger.error(f"❌ 单帧embedding匹配失败: track{tid}, error={e2}")
+                            pid = None
                     if pid is None:
                         pid = self.deduper.add(emb, {
                             'yaw': quality_result.yaw,
                             'pitch': quality_result.pitch,
                             'roll': quality_result.roll
                         })
+                        
+                        # ================ 健壮性增强：保存前验证所有数据 ================
+                        # 检查所有必要数据的合法性
+                        if pid < 0:
+                            logger.error(f"❌ 添加新ID失败: pid={pid} | track={tid}")
+                            continue
+                        
+                        if face_crop is None or face_crop.size == 0:
+                            logger.error(f"❌ 人脸裁剪无效: track={tid}")
+                            continue
+                        
+                        if frame is None or frame.size == 0:
+                            logger.error(f"❌ 原始帧无效: track={tid}")
+                            continue
+                        
+                        if emb is None or emb.size == 0:
+                            logger.error(f"❌ embedding数据无效: pid={pid:05d} | track={tid}")
+                            continue
                         
                         # 直接保存原始人脸裁剪和 embedding（质量筛选已完成）
                         os.makedirs(os.path.join(output_dir, 'embeddings'), exist_ok=True)
@@ -697,48 +800,95 @@ class FrontalFaceExtractor:
                             # 保存原始帧截图（用于对比分析）
                             frame_saved = cv2.imwrite(frame_path, frame)
                             
-                            if face_saved and frame_saved:
-                                # 保存 embedding（应该来自 InsightFace，质量更高）
-                                if emb is not None and emb.size > 0:
+                            if not face_saved:
+                                logger.error(f"❌ 保存人脸图像失败: {img_path}, size={face_crop.shape if face_crop is not None else 'None'}")
+                                continue
+                            
+                            if not frame_saved:
+                                logger.error(f"❌ 保存原始帧失败: {frame_path}, size={frame.shape if frame is not None else 'None'}")
+                                try:
+                                    os.remove(img_path)
+                                except:
+                                    pass
+                                continue
+                            
+                            # 保存 embedding（应该来自 InsightFace，质量更高）
+                            if emb is not None and emb.size > 0:
+                                try:
+                                    # ================ 健壮性增强：embedding保存验证 ================
                                     np.save(emb_path, emb.astype(np.float32))
+                                    
+                                    # 验证embedding是否成功保存
+                                    saved_emb = np.load(emb_path)
+                                    if saved_emb is None or saved_emb.size != emb.size:
+                                        logger.error(f"❌ Embedding保存或读取失败: pid={pid:05d} | track={tid}")
+                                        try:
+                                            os.remove(emb_path)
+                                            os.remove(img_path)
+                                            os.remove(frame_path)
+                                        except:
+                                            pass
+                                        continue
+                                    
                                     saved_count += 1
                                     rec.first_saved = True
                                     
                                     # 保存质量检测详细信息到文本文件
-                                    debug_info_path = os.path.join(output_dir, 'debug_frames', f"frame_{pid:05d}_track{tid}_f{frame_count}_info.txt")
-                                    with open(debug_info_path, 'w', encoding='utf-8') as f:
-                                        f.write(f"人脸ID: {pid:05d}\n")
-                                        f.write(f"轨迹ID: {tid}\n")
-                                        f.write(f"帧号: {frame_count}\n")
-                                        f.write(f"时间: {time_str} ({timestamp:.2f}s)\n")
-                                        f.write(f"检测置信度: {conf:.4f}\n")
-                                        f.write(f"质量分数: {quality_result.quality_score:.4f}\n")
-                                        f.write(f"姿态分数: {quality_result.pose_score:.4f}\n")
-                                        f.write(f"头部姿态: Y={quality_result.yaw:.1f}°, P={quality_result.pitch:.1f}°, R={quality_result.roll:.1f}°\n")
-                                        f.write(f"是否高质量: {quality_result.is_high_quality}\n")
-                                        f.write(f"是否正脸: {quality_result.is_frontal}\n")
-                                        if quality_result.reasons:
-                                            f.write(f"质量问题:\n")
-                                            for reason in quality_result.reasons:
-                                                f.write(f"  - {reason}\n")
-                                        f.write(f"人脸坐标: ({x1}, {y1}, {x2}, {y2})\n")
-                                        f.write(f"人脸尺寸: {x2-x1}x{y2-y1}\n")
+                                    try:
+                                        debug_info_path = os.path.join(output_dir, 'debug_frames', f"frame_{pid:05d}_track{tid}_f{frame_count}_info.txt")
+                                        with open(debug_info_path, 'w', encoding='utf-8') as f:
+                                            f.write(f"人脸ID: {pid:05d}\n")
+                                            f.write(f"轨迹ID: {tid}\n")
+                                            f.write(f"帧号: {frame_count}\n")
+                                            f.write(f"时间: {time_str} ({timestamp:.2f}s)\n")
+                                            f.write(f"检测置信度: {conf:.4f}\n")
+                                            f.write(f"质量分数: {quality_result.quality_score:.4f}\n")
+                                            f.write(f"姿态分数: {quality_result.pose_score:.4f}\n")
+                                            f.write(f"头部姿态: Y={quality_result.yaw:.1f}°, P={quality_result.pitch:.1f}°, R={quality_result.roll:.1f}°\n")
+                                            f.write(f"是否高质量: {quality_result.is_high_quality}\n")
+                                            f.write(f"是否正脸: {quality_result.is_frontal}\n")
+                                            if quality_result.reasons:
+                                                f.write(f"质量问题:\n")
+                                                for reason in quality_result.reasons:
+                                                    f.write(f"  - {reason}\n")
+                                            f.write(f"人脸坐标: ({x1}, {y1}, {x2}, {y2})\n")
+                                            f.write(f"人脸尺寸: {x2-x1}x{y2-y1}\n")
+                                    except Exception as e:
+                                        logger.warning(f"⚠️  保存调试信息失败: {e}")
                                     
                                     logger.info(f"✅ 保存首帧正脸: pid={pid:05d} | track={tid} | frame={frame_count} | 质量={quality_result.quality_score:.4f} | "
                                               f"姿态(Y={quality_result.yaw:.1f}°, P={quality_result.pitch:.1f}°, R={quality_result.roll:.1f}°) | emb_dim={emb.size}")
-                                    with open(rec_path, 'a', encoding='utf-8') as f:
-                                        f.write(f"{pid},{tid},{time_str},{timestamp:.2f},{conf:.4f},{img_path},{emb_path},{frame_count}\n")
-                                else:
-                                    logger.warning(f"⚠️  embedding 无效: pid={pid:05d} | track={tid}")
+                                    
                                     try:
+                                        with open(rec_path, 'a', encoding='utf-8') as f:
+                                            f.write(f"{pid},{tid},{time_str},{timestamp:.2f},{quality_result.quality_score:.4f},{quality_result.quality_score*100:.2f}%,{img_path},{emb_path},{frame_count}\n")
+                                    except Exception as e:
+                                        logger.error(f"❌ 写入记录文件失败: {e}")
+                                        # 即使记录失败，也要继续处理
+                                
+                                except Exception as e:
+                                    logger.error(f"❌ Embedding保存过程出错: pid={pid:05d} | track={tid} | error={e}")
+                                    try:
+                                        os.remove(emb_path)
                                         os.remove(img_path)
                                         os.remove(frame_path)
                                     except:
                                         pass
+                                    continue
                             else:
-                                logger.error(f"❌ 保存图像失败: img={face_saved}, frame={frame_saved}")
+                                logger.warning(f"⚠️  embedding 无效或为空: pid={pid:05d} | track={tid} | size={emb.size if emb is not None else 'None'}")
+                                try:
+                                    os.remove(img_path)
+                                    os.remove(frame_path)
+                                except:
+                                    pass
                         except Exception as e:
-                            logger.error(f"❌ 保存人脸时出错: {e}")
+                            logger.error(f"❌ 保存人脸过程出错: track={tid}, error={e}")
+                            try:
+                                os.remove(img_path)
+                                os.remove(frame_path)
+                            except:
+                                pass
         
         # =============== 帧级去重处理：对本帧的多个人脸进行去重 ===============
         if len(frame_embeddings) > 1:
@@ -777,81 +927,12 @@ class FrontalFaceExtractor:
         
         return current_active, saved_count
     
-    def process_ended_tracks(self, ended_tracks: set, track_db: Dict[int, FaceRecord],
-                            output_dir: str, rec_path: str, time_str: str, 
-                            timestamp: float, frame_count: int) -> int:
-        """
-        处理结束的 track（best_end 策略）
-        
-        只保存有正脸的 track，且保存质量最好的正脸
-        """
-        saved_count = 0
-        
-        for tid in list(ended_tracks):
-            rec = track_db.get(tid)
-            if not rec:
-                continue
-            
-            # 检查是否有正脸
-            if rec.frontal_count == 0 or rec.best_image is None:
-                track_db.pop(tid, None)
-                continue
-            
-            # 计算聚合 embedding
-            if len(rec.embeddings) == 0:
-                track_db.pop(tid, None)
-                continue
-            
-            agg_emb = np.mean(np.stack(rec.embeddings, axis=0), axis=0)
-            
-            # 去重匹配
-            logger.debug(f"📹 处理轨迹ID={tid} | 共{len(rec.embeddings)}帧 | 质量={rec.best_quality_score:.4f}")
-            pid = self.deduper.find_match(agg_emb, debug=False)
-            if pid is None:
-                pid = self.deduper.add(agg_emb, {
-                    'yaw': rec.best_yaw,
-                    'pitch': rec.best_pitch,
-                    'roll': rec.best_roll
-                })
-            
-            # 保存最佳正脸
-            img_path = os.path.join(output_dir, f"face_{pid:05d}_track{tid}_FRONTAL.jpg")
-            emb_path = os.path.join(output_dir, 'embeddings', f"face_{pid:05d}_track{tid}_FRONTAL.npy")
-            
-            # 保存最佳图像并验证质量
-            os.makedirs(os.path.dirname(img_path), exist_ok=True)
-            if cv2.imwrite(img_path, rec.best_image):
-                # 简单的质量验证（对于已对齐的图像）
-                is_valid, reason = self.quality_validator.validate(rec.best_image, img_path)
-                if is_valid and save_embedding(agg_emb, emb_path):
-                    saved_count += 1
-                    with open(rec_path, 'a', encoding='utf-8') as f:
-                        f.write(f"{pid},{tid},{time_str},{timestamp:.2f},{rec.best_quality_score:.4f},{img_path},{emb_path},{frame_count}\n")
-                else:
-                    # 质量检验失败，删除图像
-                    logger.warning(f"⚠️  轨迹{tid}的最佳人脸质量检验失败: {reason}")
-                    try:
-                        os.remove(img_path)
-                    except:
-                        pass
-            
-            track_db.pop(tid, None)
-        
-        return saved_count
 
 
 def process_video(video_path: str, output_dir: str, args):
     """处理单个视频"""
     os.makedirs(output_dir, exist_ok=True)
-    
-    extractor = FrontalFaceExtractor(args)
 
-    # 加载历史 embedding 库，支持和已有人脸ID进行匹配
-    if getattr(args, 'reuse_embedding_db', True):
-        loaded = load_existing_embeddings_to_deduper(extractor.deduper, args.embedding_db_dir)
-        if loaded > 0:
-            logger.info(f"已加载历史人脸库: {loaded} 个persona (db: {args.embedding_db_dir})")
-    
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         logger.error(f"无法打开视频: {video_path}")
@@ -871,11 +952,34 @@ def process_video(video_path: str, output_dir: str, args):
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     vw = cv2.VideoWriter(preview_out, cv2.VideoWriter_fourcc(*'mp4v'), max(fps / sample_interval, 1), (W, H))
     
+    # 🆕 根据视频分辨率动态计算所有尺寸阈值
+    size_thresholds = cfg.calculate_size_thresholds(H, W, cfg.MIN_FACE_SIZE_RATIO)
+    # 更新全局配置中的相关参数，供后续处理使用
+    cfg.BYTETRACK_CONFIG['min_box_area'] = size_thresholds['min_box_area']
+    cfg.FACE_SAVE_VALIDATOR['min_face_width'] = size_thresholds['min_face_width']
+    cfg.FACE_SAVE_VALIDATOR['min_face_height'] = size_thresholds['min_face_height']
+    # 动态设置为全局属性，供 face_dedup_utils 使用
+    cfg.MIN_FACE_SIZE = size_thresholds['min_face_size']
+    cfg.MIN_SAVE_FACE_SIZE = size_thresholds['min_save_face_size']
+    logger.info(f"📊 视频分辨率: {W}×{H}, MIN_FACE_SIZE_RATIO={cfg.MIN_FACE_SIZE_RATIO}")
+    logger.info(f"   动态阈值: min_face_size={size_thresholds['min_face_size']}px, "
+                f"min_box_area={size_thresholds['min_box_area']}px², "
+                f"min_face_width/height={size_thresholds['min_face_width']}px")
+    
+    # 🔄 在计算动态阈值后创建提取器
+    extractor = FrontalFaceExtractor(args)
+
+    # 加载历史 embedding 库，支持和已有人脸ID进行匹配
+    if getattr(args, 'reuse_embedding_db', True):
+        loaded = load_existing_embeddings_to_deduper(extractor.deduper, args.embedding_db_dir)
+        if loaded > 0:
+            logger.info(f"已加载历史人脸库: {loaded} 个persona (db: {args.embedding_db_dir})")
+    
     # 记录文件
     rec_path = os.path.join(output_dir, 'face_records_frontal.txt')
     if not os.path.exists(rec_path) or os.path.getsize(rec_path) == 0:
         with open(rec_path, 'w', encoding='utf-8') as f:
-            f.write('persona_id,track_id,time,timestamp,quality_score,image_path,embedding_path,frame_count\n')
+            f.write('persona_id,track_id,time,timestamp,quality_score,quality_score_percent,image_path,embedding_path,frame_count\n')
     
     frame_count = 0
     saved_count = 0
@@ -908,16 +1012,13 @@ def process_video(video_path: str, output_dir: str, args):
                 )
                 saved_count += frame_saved
                 
-                # 处理结束的 track
-                if args.save_strategy == 'best_end':
-                    ended = previous_active - current_active
-                    ended_saved = extractor.process_ended_tracks(
-                        ended, track_db, output_dir, rec_path,
-                        time_str, timestamp, frame_count
-                    )
-                    saved_count += ended_saved
-                
                 previous_active = current_active
+                
+                # 定期清理过期的 track_history 记录（避免内存堆积）
+                if frame_count % 50 == 0:
+                    cleaned = extractor.track_history.cleanup(frame_count)
+                    if cleaned > 0:
+                        logger.debug(f"🧹 TrackHistory cleanup: 清理了{cleaned}个过期track记录")
             else:
                 # 不使用跟踪模式：逐帧检测
                 dets = extractor.det.detect(frame, conf_threshold=args.conf)
@@ -941,9 +1042,17 @@ def process_video(video_path: str, output_dir: str, args):
                         continue
                     
                     aligned = align_face(face_crop, d.get('kps'))
-                    emb = SimpleEmbedder.get_embedding_from_detection(d, aligned)
                     
-                    if emb is None:
+                    # 统一使用InsightFace embedding，避免混用不同特征空间
+                    emb = d.get('embedding')
+                    if emb is not None:
+                        emb = np.asarray(emb, dtype=np.float32)
+                        norm = np.linalg.norm(emb)
+                        if norm > 0:
+                            emb = emb / norm
+                    else:
+                        # 如果没有embedding，直接跳过该人脸，不使用HSV直方图作为备用
+                        logger.debug(f"⚠️  跳过无embedding的人脸（帧{frame_count}）以避免混用不同特征空间")
                         continue
                     
                     logger.debug(f"📹 正在处理人脸检测 | 帧={frame_count} | 质量分数={quality_result.quality_score:.4f}")
@@ -960,7 +1069,7 @@ def process_video(video_path: str, output_dir: str, args):
                         if save_image(aligned, img_path) and save_embedding(emb, emb_path):
                             saved_count += 1
                             with open(rec_path, 'a', encoding='utf-8') as f:
-                                f.write(f"{pid},-1,{time_str},{timestamp:.2f},{quality_result.quality_score:.4f},{img_path},{emb_path},{frame_count}\n")
+                                f.write(f"{pid},-1,{time_str},{timestamp:.2f},{quality_result.quality_score:.4f},{quality_result.quality_score*100:.2f}%,{img_path},{emb_path},{frame_count}\n")
             
             vw.write(frame)
             frame_count += 1
@@ -970,30 +1079,8 @@ def process_video(video_path: str, output_dir: str, args):
         cap.release()
         vw.release()
         
-        # 处理剩余的 track
-        if args.save_strategy == 'best_end' and track_db:
-            logger.info(f"处理剩余 {len(track_db)} 个 track...")
-            for tid, rec in list(track_db.items()):
-                if rec.frontal_count > 0 and rec.best_image is not None and len(rec.embeddings) > 0:
-                    agg_emb = np.mean(np.stack(rec.embeddings, axis=0), axis=0)
-                    logger.debug(f"📹 处理最后的轨迹ID={tid} | 共{len(rec.embeddings)}帧 | 质量={rec.best_quality_score:.4f}")
-                    pid = extractor.deduper.find_match(agg_emb, debug=False)
-                    if pid is None:
-                        pid = extractor.deduper.add(agg_emb)
-                        img_path = os.path.join(output_dir, f"face_{pid:05d}_track{tid}_FINAL.jpg")
-                        
-                        # 保存并验证质量
-                        os.makedirs(os.path.dirname(img_path), exist_ok=True)
-                        if cv2.imwrite(img_path, rec.best_image):
-                            is_valid, reason = extractor.quality_validator.validate(rec.best_image, img_path)
-                            if is_valid:
-                                saved_count += 1
-                            else:
-                                logger.warning(f"⚠️  轨迹{tid}的最终人脸质量检验失败: {reason}")
-                                try:
-                                    os.remove(img_path)
-                                except:
-                                    pass
+        # First策略: 所有face都已在处理过程中实时保存
+        # 无需额外处理剩余的track
     
     logger.info(f"完成: {saved_count} 张正脸已保存 (输出: {output_dir})")
     return saved_count
@@ -1018,10 +1105,6 @@ def main():
                        help='禁用轻量级检测驱动的跟踪器（默认启用）')
     parser.set_defaults(use_detection_tracker=True)
 
-    # 保存策略
-    parser.add_argument('--save-strategy', type=str, choices=['first', 'best_end'], default=cfg.SAVE_STRATEGY,
-                       help='保存策略: first(第一个正脸), best_end(track结束时保存最佳)')
-
     # 姿态阈值
     parser.add_argument('--yaw-threshold', type=float, default=cfg.YAW_THRESHOLD, help='Yaw角度阈值（度）')
     parser.add_argument('--pitch-threshold', type=float, default=cfg.PITCH_THRESHOLD, help='Pitch角度阈值（度）')
@@ -1030,6 +1113,14 @@ def main():
     # 去重参数
     parser.add_argument('--threshold', type=float, default=cfg.DEDUP_THRESHOLD, help='去重相似度阈值')
     parser.add_argument('--metric', type=str, default=cfg.SIMILARITY_METRIC, choices=['cosine', 'euclidean'])
+
+    # 人脸验证参数（新增）
+    parser.add_argument('--quality-threshold', type=float, default=0.2,
+                       help='画质评分最低阈值 (0.0-0.7，默认0.2)')
+    parser.add_argument('--confidence-threshold', type=float, default=0.4,
+                       help='检测置信度最低阈值 (0.3-0.7，默认0.4)')
+    parser.add_argument('--strict-mode', dest='strict_mode', action='store_true',
+                       help='严格模式：使用更高的验证阈值')
 
     # 其他
     parser.add_argument('--detector', type=str, default=cfg.DEFAULT_DETECTOR, choices=['auto', 'insightface', 'yolo'],
@@ -1070,7 +1161,6 @@ def main():
     logger.info("正脸提取配置:")
     logger.info(f"  姿态阈值: yaw={args.yaw_threshold}°, pitch={args.pitch_threshold}°, roll={args.roll_threshold}°")
     logger.info(f"  去重阈值: {args.threshold} ({args.metric})")
-    logger.info(f"  保存策略: {args.save_strategy}")
     logger.info(f"  使用跟踪: {args.use_tracks}")
     logger.info("=" * 60)
     
