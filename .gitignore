@@ -45,9 +45,7 @@ logs/
 *.log
 
 # Model files (large, usually downloaded)
-models/yolo/*.pt
-models/yolo/*.onnx
-models/insightface/
+models/*
 
 # Environment and config
 .env
