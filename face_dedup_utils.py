@@ -1375,6 +1375,16 @@ class Deduper:
     def _cosine_sim(self, a: np.ndarray, b: np.ndarray) -> float:
         return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
 
+    @staticmethod
+    def _safe_l2_normalize(v: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if v is None:
+            return None
+        arr = np.asarray(v, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(arr))
+        if arr.size == 0 or norm <= 0:
+            return None
+        return arr / norm
+
     def find_match(self, emb: np.ndarray, metadata: Dict = None, debug: bool = False) -> Optional[int]:
         """
         查找匹配的人脸ID
@@ -1393,35 +1403,76 @@ class Deduper:
         emb_orig = np.asarray(emb, dtype=np.float32)
         emb_orig_norm = np.linalg.norm(emb_orig)
         emb = emb / (emb_orig_norm + 1e-12)
+
+        # 可选：融合半身衣物上下文特征（HSV直方图）
+        query_ctx = self._safe_l2_normalize((metadata or {}).get('context_hist'))
+        use_context = query_ctx is not None
+        face_weight = float((metadata or {}).get('face_weight', getattr(cfg, 'CONTEXT_FACE_WEIGHT', 0.8)))
+        context_weight = float((metadata or {}).get('context_weight', getattr(cfg, 'CONTEXT_APPAREL_WEIGHT', 0.2)))
+        total_weight = face_weight + context_weight
+        if total_weight <= 1e-12:
+            face_weight, context_weight = 1.0, 0.0
+        else:
+            face_weight /= total_weight
+            context_weight /= total_weight
         
         if self.metric == 'cosine':
             sims = [float(np.dot(e, emb)) for e in self.embeddings]
-            best_idx = int(np.argmax(sims))
+
+            if use_context:
+                fused_sims = []
+                for i, face_sim in enumerate(sims):
+                    cand_ctx = self._safe_l2_normalize((self.metadata[i] or {}).get('context_hist'))
+                    if cand_ctx is not None and cand_ctx.shape == query_ctx.shape:
+                        ctx_sim = self._cosine_sim(cand_ctx, query_ctx)
+                        fused_sims.append(face_weight * face_sim + context_weight * ctx_sim)
+                    else:
+                        # 缺失上下文时回退到纯人脸分数
+                        fused_sims.append(face_sim)
+                sims_to_use = fused_sims
+            else:
+                sims_to_use = sims
+
+            best_idx = int(np.argmax(sims_to_use))
             
             if debug:
                 # 显示前3个候选人脸的相似度（用于调试）
-                top_3_indices = sorted(range(len(sims)), key=lambda i: sims[i], reverse=True)[:3]
-                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(sim={sims[i]:.4f})" for i in top_3_indices])
+                top_3_indices = sorted(range(len(sims_to_use)), key=lambda i: sims_to_use[i], reverse=True)[:3]
+                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(sim={sims_to_use[i]:.4f})" for i in top_3_indices])
                 logger.info(f"[去重候选] 前3个候选: {top_3_info} | 输入emb_dim={emb_orig.shape[0]} | norm={emb_orig_norm:.6f}")
             
-            if sims[best_idx] >= self.threshold:
+            if sims_to_use[best_idx] >= self.threshold:
                 matched_id = self.ids[best_idx]
-                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | sim={sims[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
+                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | sim={sims_to_use[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
                 return matched_id
             return None
         else:
             dists = [float(np.linalg.norm(e - emb)) for e in self.embeddings]
-            best_idx = int(np.argmin(dists))
+
+            if use_context:
+                fused_dists = []
+                for i, face_dist in enumerate(dists):
+                    cand_ctx = self._safe_l2_normalize((self.metadata[i] or {}).get('context_hist'))
+                    if cand_ctx is not None and cand_ctx.shape == query_ctx.shape:
+                        ctx_dist = float(np.linalg.norm(cand_ctx - query_ctx))
+                        fused_dists.append(face_weight * face_dist + context_weight * ctx_dist)
+                    else:
+                        fused_dists.append(face_dist)
+                dists_to_use = fused_dists
+            else:
+                dists_to_use = dists
+
+            best_idx = int(np.argmin(dists_to_use))
             
             if debug:
                 # 显示前3个候选人脸的距离（用于调试）
-                top_3_indices = sorted(range(len(dists)), key=lambda i: dists[i])[:3]
-                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(dist={dists[i]:.4f})" for i in top_3_indices])
+                top_3_indices = sorted(range(len(dists_to_use)), key=lambda i: dists_to_use[i])[:3]
+                top_3_info = " | ".join([f"ID={self.ids[i]:05d}(dist={dists_to_use[i]:.4f})" for i in top_3_indices])
                 logger.info(f"[去重候选] 前3个候选: {top_3_info} | 输入emb_dim={emb_orig.shape[0]} | norm={emb_orig_norm:.6f}")
             
-            if dists[best_idx] <= self.threshold:
+            if dists_to_use[best_idx] <= self.threshold:
                 matched_id = self.ids[best_idx]
-                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | dist={dists[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
+                logger.info(f"🔗 去重匹配: ID={matched_id:05d} | dist={dists_to_use[best_idx]:.4f} | 输入emb_dim={emb_orig.shape[0]}")
                 return matched_id
             return None
 

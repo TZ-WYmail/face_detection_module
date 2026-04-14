@@ -52,7 +52,7 @@ class ProjectSetup:
         'models': {
             'name': 'models',
             'desc': '本地模型文件',
-            'subdirs': ['insightface', 'yolo']
+            'subdirs': ['insightface', 'yolo', 'reid']
         },
         'logs': {
             'name': 'logs',
@@ -99,6 +99,100 @@ class ProjectSetup:
             return True
         except Exception as e:
             logger.error(f"创建目录失败: {e}")
+            return False
+
+    def download_reid_model(self) -> bool:
+        """下载 OSNet ReID 模型到 models/reid/ 目录"""
+        logger.info("\n" + "="*60)
+        logger.info("下载 ReID (OSNet) 模型")
+        logger.info("="*60)
+
+        reid_dir = self.project_root / 'models' / 'reid'
+        reid_dir.mkdir(parents=True, exist_ok=True)
+
+        model_path = reid_dir / 'osnet_x0_25_msmt17.pt'
+        if model_path.exists():
+            size_mb = model_path.stat().st_size / 1024 / 1024
+            logger.info(f"✅ ReID 模型已存在: {model_path} ({size_mb:.2f} MB)")
+            return True
+
+        logger.info("模型不存在，开始下载 OSNet-x0.25 (MSMT17 预训练) ...")
+        logger.info("模型大小: ~3 MB，首次运行会自动从 torchreid 下载预训练权重")
+
+        try:
+            script = '''
+import sys, os
+try:
+    from torchreid import models
+    import torch
+
+    # 构建 OSNet 模型并加载 MSMT17 预训练权重
+    model = models.build_model(
+        name="osnet_x0_25",
+        num_classes=10429,
+        pretrained="msmt17"
+    )
+    model.eval()
+
+    # 测试推理
+    x = torch.randn(1, 3, 256, 128)
+    with torch.no_grad():
+        feat = model(x)
+    feat = feat / (torch.norm(feat, p=2) + 1e-12)
+    print(f"ReID embedding shape: {feat.shape}")
+
+    # 保存为 TorchScript
+    if torch.cuda.is_available():
+        model = model.cuda()
+        x = x.cuda()
+        scripted = torch.jit.trace(model, x)
+    else:
+        scripted = torch.jit.trace(model, x)
+
+    save_path = "''' + str(model_path) + '''"
+    scripted.save(save_path)
+    size_mb = os.path.getsize(save_path) / 1024 / 1024
+    print(f"Saved: {save_path} ({size_mb:.2f} MB)")
+    print("SUCCESS")
+except ImportError as e:
+    print(f"MISSING_DEP: {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: {e}")
+    sys.exit(1)
+'''
+            result = subprocess.run(
+                [sys.executable, '-c', script],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+
+            if result.returncode != 0:
+                output = result.stdout + result.stderr
+                if 'MISSING_DEP' in output:
+                    logger.error(
+                        "❌ 缺少依赖: torchreid。请先安装:\n"
+                        "   pip install torchreid"
+                    )
+                else:
+                    logger.error(f"❌ ReID 模型下载失败:\n{output[:2000]}")
+                return False
+
+            if 'SUCCESS' in result.stdout:
+                size_mb = model_path.stat().st_size / 1024 / 1024
+                logger.info(f"✅ ReID 模型下载成功: {model_path} ({size_mb:.2f} MB)")
+                return True
+            else:
+                logger.warning(f"⚠️ 模型下载结果不确定:\n{result.stdout[:1000]}")
+                return model_path.exists()
+
+        except subprocess.TimeoutExpired:
+            logger.error("❌ ReID 模型下载超时（5分钟）")
+            return False
+        except Exception as e:
+            logger.error(f"❌ ReID 模型下载失败: {e}")
             return False
 
     def download_models(self, hf_token: Optional[str] = None) -> bool:
@@ -493,8 +587,8 @@ echo "=========================================="
         # 2. 下载模型
         if not skip_models:
             if not self.download_models(hf_token):
-                logger.warning("⚠️ 模型下载失败，但项目结构已创建")
-        else:
+                logger.warning("⚠️ 模型下载失败，但项目结构已创建")            # 下载 ReID 模型
+            self.download_reid_model()        else:
             logger.info("⏭️  跳过模型下载（--skip-models）")
 
         # 3. 创建配置文件

@@ -40,6 +40,18 @@
 
 新版本采用**优化的验证流程**，性能更优，准确度保持或提升。
 
+### 核心模块
+
+| 文件 | 职责 |
+|------|------|
+| `face_dedup_pipeline.py` | **主程序**，`FrontalFaceExtractor` 类封装完整流水线 |
+| `face_dedup_utils.py` | **核心工具库**：`Detector`(检测器统一接口)、`Deduper`(去重器)、`HeadPoseEstimator`(姿态估计) 等 |
+| `simple_face_validator.py` | **人脸验证器**：置信度 + 画质评分 + embedding 有效性检查 |
+| `check_face_quality.py` | 离线图片质量检查工具 |
+| `config.py` | 全局配置（阈值、权重、尺寸参数等） |
+| `model_manager.py` | 模型路径管理、完整性验证、自动下载 |
+| `initialize_project.py` | 项目初始化（依赖检查 + 模型校验） |
+
 ### 流程步骤
 
 | 步骤 | 操作 | 说明 | 新增内容 |
@@ -51,6 +63,122 @@
 | **5** | **人脸验证** ⭐ | 置信度检查、画质评分、embedding 有效性 | **新增（优化）** |
 | 6 | 去重匹配 | embedding 相似度匹配，搜索历史库 | - |
 | 7 | 结果保存 | 保存 JPG、embedding、CSV 记录 | - |
+| **8** | **聚类精修** 🧩 | 基于全量 embedding 做离线聚类，输出 refined_persona_id | **新增（完善）** |
+| **9** | **全局聚类精修** 🌐 | 跨视频统一聚类，输出 global_refined_persona_id | **新增（跨视频）** |
+
+> 说明：第8步不会覆盖原始记录文件，会额外输出：
+> - `persona_cluster_mapping.csv`（旧ID到精修ID映射）
+> - `face_records_frontal_clustered.txt`（新增 `refined_persona_id` 列）
+>
+> 第9步在输出根目录执行，会额外输出：
+> - `global_persona_cluster_mapping.csv`（视频内ID到全局ID映射）
+> - `face_records_global_clustered.txt`（跨视频总表，新增 `global_refined_persona_id`）
+> - 每个视频目录下 `face_records_frontal_global_clustered.txt`
+
+### 完整工作流
+
+```mermaid
+flowchart TB
+    subgraph Init["初始化阶段"]
+        A[环境准备<br/>conda create / pip install] --> B[项目初始化<br/>python initialize_project.py]
+        B --> C{模型检查}
+        C -->|模型存在| D[✅ 就绪]
+        C -->|模型缺失| E[自动下载模型<br/>ModelManager]
+        E --> D
+    end
+
+    subgraph Input["输入阶段"]
+        F[视频文件/文件夹<br/>videos/] --> G[参数解析<br/>args_manager]
+        G --> H{GPU检测}
+        H -->|CUDA可用| I[启用GPU加速]
+        H -->|不可用| J[使用CPU]
+    end
+
+    subgraph Pipeline["核心处理流水线 face_dedup_pipeline.py"]
+        D --> K[视频逐帧读取<br/>cv2.VideoCapture]
+        I --> K
+        J --> K
+
+        K --> L[帧采样<br/>--sample-interval]
+
+        L --> M{"启用跟踪?<br/>--use-tracks"}
+
+        M -->|是| N[Step 1: ByteTrack跟踪<br/>model_track.track]
+        N --> O[Step 2: 人脸检测<br/>Detector.detect<br/>InsightFace / YOLO]
+
+        M -->|否| O
+
+        O --> P[提取 bbox + kps + embedding]
+
+        P --> Q[Step 3: 头部姿态估计<br/>HeadPoseEstimator<br/>计算 yaw/pitch/roll]
+
+        Q --> R[Step 4: 正脸判断<br/>evaluate_face_quality<br/>角度是否在阈值内?]
+
+        R -->|非正脸| S[⏭️ 跳过]
+
+        R -->|正脸| T[Step 5: 人脸验证<br/>SimpleFaceValidator<br/>置信度 + 画质评分 + emb有效性]
+
+        T -->|验证失败| S
+
+        T -->|验证通过| U[Step 6: 帧级去重<br/>同帧多人脸取最大]
+
+        U --> V[Step 7: TrackHistory<br/>连续重复帧检查]
+
+        V -->|重复帧| S
+
+        V -->|新帧| W[Step 8: 去重匹配<br/>Deduper.find_match<br/>Embedding余弦相似度]
+
+        W --> X{匹配到已有persona?}
+
+        X -->|是| S
+
+        X -->|否| Y[分配新 persona_id<br/>Deduper.add]
+    end
+
+    subgraph Output["输出阶段"]
+        Y --> Z[保存人脸图片<br/>.jpg]
+        Z --> AA[保存Embedding<br/>.npy]
+        AA --> AB[保存调试帧<br/>debug_frames/]
+        AB --> AC[写入CSV记录<br/>face_records_frontal.txt]
+        AC --> AD[保存质量详情<br/>_info.txt]
+        AD --> AE[单视频聚类精修<br/>refined_persona_id]
+        AE --> AF[跨视频全局聚类<br/>global_refined_persona_id]
+    end
+
+    style Init fill:#e3f2fd,stroke:#1976d2
+    style Pipeline fill:#fff3e0,stroke:#f57c00
+    style Output fill:#e8f5e9,stroke:#388e3c
+    style Input fill:#f3e5f5,stroke:#7b1fa2
+```
+
+#### 设计亮点
+
+1. **自适应尺寸过滤** — 基于 `MIN_FACE_SIZE_RATIO`(占比1.5%) 而非固定像素，自动适应不同分辨率
+2. **双检测器架构** — InsightFace（高精度）和 YOLO（高速度）可切换
+3. **多级去重** — 帧级去重(同帧取最大) → 连续帧去重(TrackHistory) → 单视频聚类精修 → 跨视频全局聚类精修
+4. **跨运行/跨视频匹配** — `load_existing_embeddings_to_deduper()` 可加载历史 embedding 库
+
+### 聚类精修参数（新增）
+
+```bash
+# 单视频聚类精修（默认开启）
+--cluster-refine / --no-cluster-refine
+--cluster-threshold 0.45
+--cluster-min-size 2
+
+# 跨视频全局聚类精修（默认开启）
+--global-cluster-refine / --no-global-cluster-refine
+--global-cluster-threshold 0.45
+--global-cluster-min-size 2
+```
+
+示例：
+
+```bash
+python face_dedup_pipeline.py videos/ --cuda -o ./output \
+    --cluster-refine --cluster-threshold 0.45 \
+    --global-cluster-refine --global-cluster-threshold 0.45
+```
 
 ### 验证系统改进
 
@@ -170,16 +298,20 @@ pip install -r requirements.txt
 首次使用需要下载预训练模型：
 
 ```bash
-python download_models.py
+# 一键初始化（创建目录 + 下载所有模型）
+python setup_project.py
 
-# 可选：指定下载位置
-python download_models.py --insightface-dir ./models/insightface
+# 如已有目录结构，仅下载 ReID 模型：
+conda run -n biomem python setup_project.py --skip-models
 ```
 
-此脚本将自动下载：
-- InsightFace BuffaloL模型 (~350MB)
-- YOLOv11-face模型 (~25MB)
-- ByteTrack配置
+此步骤将自动下载：
+- **InsightFace** BuffaloL 模型 (~350MB)
+- **YOLOv11-face** 模型 (~25MB)
+- **OSNet-x0.25** ReID 模型 (~3MB) — 半身特征提取，MSMT17 预训练
+
+> ⚠️ ReID 模型依赖 `torchreid`，请确保在包含 PyTorch 的环境中执行（如 `conda run -n biomem`）。
+> 如果 ReID 模型下载失败，主流程会自动回退到 HSV 直方图特征。
 
 
 ## 🎯 命令行参数
@@ -263,6 +395,26 @@ python download_models.py --insightface-dir ./models/insightface
 |-----|-------|------|
 | `--threshold` | 0.5 | Embedding相似度阈值 |
 | `--metric` | `cosine` | 距离度量：`cosine` 或 `euclidean` |
+| `--embedding-mode` | `half_body` | 主embedding来源：`half_body`（推荐）或 `face` |
+| `--cluster-feature` | `reid` | 聚类/去重特征模式：`arcface`（人脸五官，推荐）/ `reid`（半身衣着）/ `hsv`（直方图） |
+| `--use-reid-feature` | True | 使用 OSNet ReID 深度特征（需先下载模型） |
+| `--no-use-reid-feature` | - | 禁用 ReID，回退到 HSV 直方图 |
+| `--reid-model` | `models/reid/osnet_x0_25_msmt17.pt` | ReID 模型路径 |
+
+### 全局匹配参数
+
+| 参数 | 默认值 | 说明 |
+|-----|-------|------|
+| `--enable-global-match` | True | 全局匹配总开关（控制下面两项） |
+| `--disable-global-match` | - | 关闭全局匹配：不加载历史库 + 不做跨视频聚类 |
+| `--reuse-embedding-db` | True | 启用历史 Embedding 库匹配（默认跟随全局开关） |
+| `--no-reuse-embedding-db` | - | 关闭历史库匹配，仅当前运行内去重 |
+| `--embedding-db-dir` | `output-dir` | 历史 Embedding 库目录 |
+| `--global-cluster-refine` | True | 跨视频全局聚类精修（默认跟随全局开关） |
+| `--no-global-cluster-refine` | - | 关闭跨视频全局聚类 |
+
+> **说明**：`--disable-global-match` 等价于同时指定 `--no-reuse-embedding-db` 和 `--no-global-cluster-refine`。
+> 如果只想关闭其中一项，可直接使用对应的 `--no-*` 参数。
 
 ### 其他参数
 
@@ -270,21 +422,22 @@ python download_models.py --insightface-dir ./models/insightface
 |-----|-------|------|
 | `--detector` | `auto` | 检测器：`auto`/`insightface`/`yolo` |
 | `--cuda` | False | 是否使用CUDA |
-| `--reuse-embedding-db` | True | 启用历史Embedding库匹配（默认开启） |
-| `--no-reuse-embedding-db` | - | 关闭历史Embedding库匹配，仅当前运行内去重 |
-| `--embedding-db-dir` | `output-dir` | 历史Embedding库目录（默认等于输出目录） |
 
 ### 历史人脸匹配（跨运行）
 
-默认情况下，流程会在启动时自动扫描 `output-dir` 下历史结果中的 `embeddings/*.npy`，
-并将其加载为已有 persona 库。新视频中的人脸会先和这批历史 embedding 做匹配：
+当全局匹配开启时（默认），流程会在启动时自动扫描历史 `embeddings/*.npy`，
+新视频中的人脸会先和这批历史 embedding 做匹配：
 
-- 匹配成功：复用已有 `persona_id`
-- 匹配失败：分配新的 `persona_id`
+- 匹配成功 → 复用已有 `persona_id`
+- 匹配失败 → 分配新的 `persona_id`
 
-如果你希望每次都从空库开始（只在本次运行中去重），可加参数：
+如需完全隔离（每次从空库开始）：
 
 ```bash
+# 方式 1：使用总开关
+python face_dedup_pipeline.py video.mp4 --disable-global-match -o ./output
+
+# 方式 2：仅关闭历史库加载
 python face_dedup_pipeline.py video.mp4 --no-reuse-embedding-db -o ./output
 ```
 
@@ -295,11 +448,15 @@ python face_dedup_pipeline.py video.mp4 --no-reuse-embedding-db -o ./output
 ```
 output/
 ├── video_name/
-│   ├── face_00001_track123_FRONTAL.jpg              # 保存的人脸图像
-│   ├── face_00002_track456_FRONTAL.jpg
+│   ├── half_body/                                   # 主输出：半身图（含衣物）
+│   │   ├── face_00001_track123_f8058.jpg
+│   │   └── ...
+│   ├── face_ref/                                    # 参考输出：人脸图
+│   │   ├── face_00001_track123_f8058.jpg
+│   │   └── ...
 │   ├── embeddings/                                  # Embedding向量目录
-│   │   ├── face_00001_track123_FRONTAL.npy         # Person 1的特征向量
-│   │   ├── face_00002_track456_FRONTAL.npy         # Person 2的特征向量
+│   │   ├── face_00001_track123_f8058_body.npy      # 半身embedding（主）
+│   │   ├── face_00002_track456_f13145_body.npy
 │   │   └── ...
 │   ├── face_records_frontal.txt                     # 处理记录
 │   └── preview.mp4                                  # 检测效果预览
@@ -330,10 +487,17 @@ persona_id,track_id,time,timestamp,quality_score,image_path,embedding_path,frame
 
 ### Embedding向量说明
 
-- **格式**：`.npy`（NumPy数值数组格式）
-- **维度**：526维向量（InsightFace特征空间）
-- **数据类型**：float32
-- **位置**：`embeddings/`子目录
+- **主格式**：`.npy`（NumPy数值数组格式）
+- **主来源**：由 `--cluster-feature` 决定（默认 `reid`）
+  - `reid`   → OSNet-x0.25 半身 ReID 特征，512 维
+  - `arcface` → InsightFace w600k_r50 人脸五官特征，512 维（推荐用于精确判人）
+  - `hsv`    → HSV 颜色直方图，`8×8×8=512` 维（传统方法）
+- **兼容来源**：当 `--embedding-mode face` 时使用 InsightFace 人脸 embedding
+- **数据类型**：float32，L2 归一化
+- **位置**：`embeddings/` 子目录（半身模式文件名后缀为 `_body.npy`）
+
+> ⚠️ 不同 `--cluster-feature` 模式产出的 embedding 维度虽相同但语义不同，
+> 混合使用（如一部分用 reid 另一部分用 arcface）会导致相似度无意义。
 
 **加载和使用Embedding的示例：**
 
@@ -342,17 +506,16 @@ import numpy as np
 
 # 加载单个人脸的embedding
 emb = np.load('embeddings/face_00001_track123_FRONTAL.npy')
-print(emb.shape)  # (526,)
+print(emb.shape)  # (512,)
 
-# 计算两个人脸之间的相似度（余弦相似度）
-from sklearn.metrics.pairwise import cosine_similarity
-sim = cosine_similarity([emb1], [emb2])[0][0]  # 范围：0-1（1为相同）
+# 计算两个人脸之间的相似度（余弦相似度，embedding 已归一化）
+sim = float(np.dot(emb1, emb2))  # 范围：0-1（1为相同）
 
 # 批量加载embeddings
 import glob
 emb_files = glob.glob('embeddings/*.npy')
 embeddings = np.array([np.load(f) for f in emb_files])
-print(embeddings.shape)  # (N, 526)
+print(embeddings.shape)  # (N, 512)
 ```
 
 ## 🔧 用法
@@ -372,23 +535,14 @@ python -c "import config; config.list_presets()"
 
 ### 🌟 调平衡+宽松（经验证最佳）⭐ 推荐使用
 ```bash
-python face_dedup_pipeline.py videos/video.mp4 \
-    --detector insightface \
-    --cuda \
-    --sample-interval 5 \
-    --conf 0.5 \
-    --quality-threshold 0.2 \
-    --confidence-threshold 0.4 \
-    --yaw-threshold 15 \
-    --pitch-threshold 15 \
-    --roll-threshold 10 \
-    --threshold 0.3 \
-    -o ./output/balanced
+python face_dedup_pipeline.py videos/video-3.mp4 --output-dir ./output --conf 0.5 --sample-interval 5 --use-tracks --use-detection-tracker --yaw-threshold 15 --pitch-threshold 15 --roll-threshold 10 --threshold 0.40 --metric cosine --embedding-mode half_body --cluster-feature reid --cluster-refine --cluster-threshold 0.45 --cluster-min-size 2 --global-cluster-refine --global-cluster-threshold 0.45 --global-cluster-min-size 2 --quality-threshold 0.2 --confidence-threshold 0.4 --detector insightface --cuda --enable-global-match --embedding-db-dir ./output/video-3 --save-half-body --half-body-top-expand 0.25 --half-body-bottom-expand 2.2 --half-body-side-expand 0.8
 ```
-- ✅ 保留最多的人脸（包括略微侧脸、平凡画质）
+- ✅ 半身优先保存，OSNet ReID 衣物上下文用于主匹配
+- ✅ 人脸作为参考图保存到 `face_ref/`
 - ✅ **经用户验证，输出结果最满意**
 - ✅ 处理时间：4-6分钟
-- ℹ️ 如需更严格控制，可修改 `--quality-threshold` 或 `--yaw-threshold`
+- 💡 如需精确判断同一人，可将 `--cluster-feature reid` 改为 `--cluster-feature arcface`
+- ℹ️ 如需完全隔离处理，将 `--enable-global-match` 改为 `--disable-global-match`
 
 ### 高质量模式（保留高质脸）
 ```bash
@@ -604,13 +758,19 @@ python face_dedup_pipeline.py ./video_folder/ \
 - 0° = 水平，±90° = 歪头
 
 ### Embedding（特征向量）
-InsightFace提取的526维特征向量，用于人脸去重。
+根据 `--cluster-feature` 模式不同，提取 512 维特征向量用于去重：
+- **ArcFace**（推荐）：人脸五官特征，同一人 0.85~0.95+，不同人 0.30~0.55
+- **OSNet ReID**：半身衣着特征，适合区分穿搭不同的人
+- **HSV 直方图**：传统颜色特征，区分度最低
 
 ### 相似度度量
 
 **Cosine相似度** （推荐）
 - 范围：0-1（1为完全相同）
-- 推荐阈值：0.5-0.7
+- 推荐阈值：
+  - ArcFace: 0.45~0.55（区分度好，阈值选择影响大）
+  - OSNet ReID: 0.65~0.75（区分度一般，需要较高阈值）
+  - HSV 直方图: 0.45~0.55
 
 **欧氏距离**
 - 范围：0-2（0为完全相同）
@@ -666,5 +826,5 @@ InsightFace提取的526维特征向量，用于人脸去重。
 
 ---
 
-**更新日期**: 2026年4月2日  
-**版本**: 2.0 (BuffaloL + ByteTrack + 头部姿态估计)
+**更新日期**: 2026年4月15日  
+**版本**: 2.1 (BuffaloL + ByteTrack + ArcFace/OSNet ReID + 聚类精修)
